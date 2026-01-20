@@ -25,12 +25,7 @@ body {
   color: var(--ink-100);
   line-height: 1.65;
   text-rendering: optimizeLegibility;
-
-  background-image: url("ske.jpeg");
-  background-size: cover;
-  background-position: center;
-  background-repeat: no-repeat;
-  background-attachment: fixed;
+  background-color: var(--navy-900);
 }
 
 a {
