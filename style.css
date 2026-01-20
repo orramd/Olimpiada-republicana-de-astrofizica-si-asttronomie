@@ -203,10 +203,9 @@ main {
 
 .hero-description {
   color: var(--ink-200);
-  max-width: 520px;
+  max-width: 900px;
+  margin: 32px auto 0;
   text-align: center;
-  margin-left: auto;
-  margin-right: auto;
 }
 
 .hero-lettering {
