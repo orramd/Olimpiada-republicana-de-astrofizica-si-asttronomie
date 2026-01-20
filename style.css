@@ -480,3 +480,30 @@ main {
     min-height: 260px;
   }
 }
+
+.news-links {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.news-link-btn {
+  display: inline-block;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--navy-900);
+  background-color: var(--orange-300);
+  border: 1px solid var(--orange-500);
+  text-decoration: none;
+  transition: background-color 0.2s ease, transform 0.2s ease;
+}
+
+.news-link-btn:hover {
+  background-color: var(--orange-500);
+  transform: translateY(-1px);
+}
