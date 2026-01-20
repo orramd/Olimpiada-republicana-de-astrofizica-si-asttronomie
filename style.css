@@ -510,9 +510,14 @@ main {
 
 .intro-with-logo {
   display: grid;
-  grid-template-columns: 1.4fr 0.6fr;
-  gap: 48px;
+  grid-template-columns: 1.6fr 0.4fr;
+  gap: 56px;
   align-items: center;
+  margin-top: 48px;
+}
+
+.intro-text p {
+  max-width: 900px;
 }
 
 .intro-logo {
@@ -521,15 +526,15 @@ main {
 }
 
 .intro-logo img {
-  max-width: 260px;
+  max-width: 280px;   /* ← КЛЮЧ: не огромный */
   width: 100%;
   background-color: #f2ebe0;
-  padding: 16px;
+  padding: 20px;
   border-radius: 14px;
-  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.45);
 }
 
-/* Мобилка */
+/* Адаптация под телефон */
 @media (max-width: 900px) {
   .intro-with-logo {
     grid-template-columns: 1fr;
@@ -537,6 +542,6 @@ main {
   }
 
   .intro-logo {
-    margin-top: 24px;
+    margin-top: 32px;
   }
 }
