@@ -508,25 +508,26 @@ main {
   transform: translateY(-1px);
 }
 
-.intro-with-logo {
+.probes-header {
   display: grid;
   grid-template-columns: 1.6fr 0.4fr;
   gap: 56px;
   align-items: center;
-  margin-top: 48px;
+  margin-bottom: 48px;
 }
 
-.intro-text p {
+.probes-text p {
   max-width: 900px;
 }
 
 .intro-logo {
   display: flex;
   justify-content: center;
+  justify-self: end;
 }
 
 .intro-logo img {
-  max-width: 280px;   /* ← КЛЮЧ: не огромный */
+  max-width: 280px;
   width: 100%;
   background-color: #f2ebe0;
   padding: 20px;
@@ -534,14 +535,14 @@ main {
   box-shadow: 0 16px 36px rgba(0, 0, 0, 0.45);
 }
 
-/* Адаптация под телефон */
 @media (max-width: 900px) {
-  .intro-with-logo {
+  .probes-header {
     grid-template-columns: 1fr;
     text-align: center;
   }
 
   .intro-logo {
+    justify-self: center;
     margin-top: 32px;
   }
 }
