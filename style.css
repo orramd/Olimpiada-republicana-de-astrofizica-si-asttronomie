@@ -546,3 +546,8 @@ main {
     margin-top: 32px;
   }
 }
+.news-images {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
