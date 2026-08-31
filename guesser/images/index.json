@@ -1,0 +1,14 @@
+{
+ "messier": {},
+ "solar": {
+  "jupiter": "images/solar/jupiter.jpg",
+  "mars": "images/solar/mars.jpg",
+  "mercury": "images/solar/mercury.jpg",
+  "moon": "images/solar/moon.jpg",
+  "neptune": "images/solar/neptune.jpg",
+  "saturn": "images/solar/saturn.jpg",
+  "sun": "images/solar/sun.jpg",
+  "uranus": "images/solar/uranus.jpg",
+  "venus": "images/solar/venus.jpg"
+ }
+}
