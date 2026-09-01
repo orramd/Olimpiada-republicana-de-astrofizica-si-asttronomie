@@ -6767,6 +6767,17 @@ function circlePlaceable(c) {
 var CIRCLE_MARK_TOL = 5;
 var CIRCLE_REGION_TOL = 12;
 
+/* Tracing is drawing, not sampling. Six points dropped anywhere on the line
+   scored full marks even if they sat inside one constellation - and what was
+   graded was the six points, so the curve between them was never anyone's
+   problem. You draw a line on the paper; the line is the answer.
+
+   So the points are joined as you place them, the whole drawn curve is what
+   gets measured, and it has to be carried far enough round the sky to be a
+   trace of a great circle rather than a mark near one. */
+var CIRCLE_TRACE_MIN = 8;
+var CIRCLE_TRACE_ARC = 90;    // degrees of arc before it counts as traced
+
 function circleIsRegion(m) { return !m || m.off == null; }
 function circleTolFor(m) { return circleIsRegion(m) ? CIRCLE_REGION_TOL : CIRCLE_MARK_TOL; }
 
@@ -6815,6 +6826,17 @@ function circleMarkOverlays(faint) {
     return { t: 'circle', ra: q.ra, dec: q.dec, rad: faint ? 0.9 : 1.1,
              colour: faint ? '#7a6a3e' : (q.ok ? '#56d98a' : '#ff6b6b') };
   });
+}
+
+/* What is on the sky while you are drawing: your placed landmarks as faint
+   context in the first tracing step, and the curve itself - joined, so you can
+   see the line rather than a scatter of clicks. */
+function circleTraceOverlays(step) {
+  var out = step === 2 ? circleMarkOverlays(true) : [];
+  if (LearnCircles.trace.length) {
+    out = out.concat([{ t: 'trace', pts: LearnCircles.trace, closed: false }]);
+  }
+  return out;
 }
 
 /* Landmarks that have a position, in the taught order. Prose-only entries
@@ -6908,8 +6930,9 @@ LEARN_TOPICS.circles = {
       }
     } else {
       body = '<div class="q">Trace <span class="target">' + esc(c.name) + '</span></div>' +
-        '<div class="note">Click along where it runs — six points or more. ' +
-        'Nothing is drawn until you check.</div>' +
+        '<div class="note">Click along where it runs — the points are joined as ' +
+        'you go, so what you draw is the line you are drawing. ' + CIRCLE_TRACE_MIN +
+        ' points or more, carried at least ' + CIRCLE_TRACE_ARC + '° round the sky.</div>' +
         (step === 2 && LearnCircles.placed.length
           ? '<div class="note">The faint marks are the ones you placed. Run the ' +
             'line through them.</div>' : '') +
@@ -6992,10 +7015,7 @@ LEARN_TOPICS.circles = {
         el('lciSkip').addEventListener('click', function () { self.markNext(); });
       }
     } else {
-      Sky.overlays = (step === 2 ? circleMarkOverlays(true) : []).concat(
-        LearnCircles.trace.map(function (p) {
-          return { t: 'circle', ra: p[0], dec: p[1], rad: 0.8, colour: '#ffc14d' };
-        }));
+      Sky.overlays = circleTraceOverlays(step);
       el('lciCheck').addEventListener('click', function () { self.check(); });
       el('lciUndo').addEventListener('click', function () {
         LearnCircles.trace.pop();
@@ -7049,28 +7069,32 @@ LEARN_TOPICS.circles = {
 
   check: function () {
     var c = circleById(LearnCircles.id), pts = LearnCircles.trace;
-    if (pts.length < 6) {
-      setHTML('lciOut', '<div class="verdict info">Place at least six points.</div>');
+    if (pts.length < CIRCLE_TRACE_MIN) {
+      setHTML('lciOut', '<div class="verdict info">Place at least ' +
+        CIRCLE_TRACE_MIN + ' points — ' + pts.length + ' so far.</div>');
       return;
     }
-    var sum = 0, worst = 0;
-    pts.forEach(function (p) {
-      var e = offCircle(p[0], p[1], c.pole);
-      sum += e; if (e > worst) worst = e;
-    });
-    var mean = sum / pts.length, ok = mean <= 3 && worst <= 8;
+    /* scoreTrace walks the curve itself, sampling every degree and a half
+       between consecutive clicks, so a pair of points either side of a corner
+       is caught by the arc that joins them rather than excused by them. It
+       also reports how much arc you actually drew. */
+    var r = scoreTrace(pts, { pole: c.pole }, false);
+    var far = r.arc >= CIRCLE_TRACE_ARC;
+    var ok = r.mean <= 3 && r.max <= 8 && far;
     LearnCircles.answered = true;
     recordAnswer('learn-circles', ok);
-    Sky.overlays = circleOverlays(c, true, true).concat(pts.map(function (p) {
-      return { t: 'circle', ra: p[0], dec: p[1], rad: 0.8,
-               colour: offCircle(p[0], p[1], c.pole) <= 3 ? '#56d98a' : '#ff6b6b' };
-    }));
+    Sky.overlays = [{ t: 'greatcircle', pole: c.pole, colour: '#57d5e8' },
+                    { t: 'trace', pts: pts, closed: false }]
+      .concat(circleOverlays(c, false, true));
     Sky.needsDraw = true;
     setHTML('lciOut', (ok
       ? '<div class="verdict ok"><b>That is the line.</b> '
-      : '<div class="verdict no"><b>Off the line.</b> ') +
-      'Average ' + mean.toFixed(1) + '° out, worst point ' + worst.toFixed(1) + '°. ' +
-      'The true circle is drawn in blue.</div>');
+      : '<div class="verdict no"><b>' +
+        (far ? 'Off the line.' : 'Not carried far enough.') + '</b> ') +
+      'The curve you drew is ' + r.mean.toFixed(1) + '° out on average, ' +
+      r.max.toFixed(1) + '° at its worst, over ' + r.arc.toFixed(0) + '° of arc' +
+      (far ? '' : ' — ' + CIRCLE_TRACE_ARC + '° is the least that counts as a trace') +
+      '. The true circle is the blue dashed one, its landmarks ringed.</div>');
   },
 
   onClick: function (rd) {
@@ -7079,9 +7103,7 @@ LEARN_TOPICS.circles = {
     LearnCircles.trace.push([rd[0], rd[1]]);
     var n = el('lciN');
     if (n) n.textContent = LearnCircles.trace.length;
-    Sky.overlays = LearnCircles.trace.map(function (p) {
-      return { t: 'circle', ra: p[0], dec: p[1], rad: 0.8, colour: '#ffc14d' };
-    });
+    Sky.overlays = circleTraceOverlays(Learn.step);
     Sky.needsDraw = true;
     return true;
   }
