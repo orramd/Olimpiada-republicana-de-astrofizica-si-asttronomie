@@ -1947,11 +1947,42 @@ function fmtGridRA(min) {
 }
 function fmtGridDec(d) { return (d > 0 ? '+' : '') + d + '°'; }
 
+/* Which patch of sky the view can possibly show, with a margin.
+
+   The grid used to be drawn whole, every time: at two degrees and closer the
+   spacing bottoms out at a minute of right ascension and a degree of
+   declination, which is 1440 meridians and 180 parallels - a hundred and ten
+   thousand projected points a frame, of which two were on screen. That was
+   forty milliseconds of every frame and by far the most expensive thing the
+   renderer did.
+
+   Near a pole every meridian really can cross the view, so there the whole
+   range is kept. Everywhere else the margin is generous - a whole field of
+   view either side - because a line that should be there and is not is a
+   worse bug than a line drawn off-screen. */
+function gridVisibleRange() {
+  var r = Math.min(120, Sky.fov * 1.2 + 1);
+  var d0 = clamp(Sky.dec - r, -90, 90), d1 = clamp(Sky.dec + r, -90, 90);
+  var polar = (Math.abs(Sky.dec) + r) >= 88;
+  if (polar) return { d0: d0, d1: d1, allRa: true };
+  var cosd = Math.max(0.02, Math.cos(clamp(Math.abs(Sky.dec) + r, 0, 89) * Math.PI / 180));
+  var rr = Math.min(190, r / cosd + 1);
+  return { d0: d0, d1: d1, allRa: rr >= 180, ra0: Sky.ra - rr, ra1: Sky.ra + rr };
+}
+
+/* Is this meridian, in quarter-minutes of RA, within the visible span? */
+function gridRaInView(deg, v) {
+  if (v.allRa) return true;
+  var d = ((deg - Sky.ra + 540) % 360) - 180;
+  return Math.abs(d) <= (v.ra1 - v.ra0) / 2;
+}
+
 function drawGrid() {
-  var ctx = Sky.ctx, i, j, st = gridSteps();
+  var ctx = Sky.ctx, i, j, st = gridSteps(), v = gridVisibleRange();
   ctx.lineWidth = 1; ctx.setLineDash([]);
 
   for (i = 0; i < 1440; i += st.raMin) {                 // meridians
+    if (!gridRaInView(i / 4, v)) continue;
     var pts = [];
     for (j = -90; j <= 90; j += 3) pts.push([i / 4, j]);
     ctx.strokeStyle = (i % 60 === 0) ? '#243046' : '#1a2130';
@@ -1959,6 +1990,7 @@ function drawGrid() {
   }
   for (i = -90 + st.dec; i <= 90 - st.dec; i += st.dec) { // parallels
     if (i === 0) continue;
+    if (i < v.d0 || i > v.d1) continue;
     var pts2 = [];
     for (j = 0; j <= 360; j += 3) pts2.push([j, i]);
     ctx.strokeStyle = (i % 30 === 0) ? '#243046' : '#1a2130';
@@ -14922,7 +14954,18 @@ Modes.defs.scope = {
                        limMag: glass ? Math.min(atm.limMag, SCOPE_CAT_LIMIT)
                                      : Math.min(atm.limMag, atm.nakedEye),
                        thinOut: !glass,
-                       starScale: glass ? 0.6 : 1 };
+                       /* Discs shrink as you magnify past the eyepiece's own
+                          field. A star is a point: its size on the retina does
+                          not grow with magnification, only the gaps between
+                          stars do. Drawn at a fixed 6.4 pixels, epsilon Lyrae's
+                          components sat 9.4 pixels apart inside two discs that
+                          overlapped into one blob - so zooming in showed the
+                          same fat dot however far you went. Shrinking as the
+                          square root keeps faint stars visible while letting
+                          real separations win. */
+                       starScale: glass
+                         ? Math.max(0.26, 0.6 / Math.sqrt(Math.max(1, Scope.zoom || 1)))
+                         : 1 };
     if (glass) {
       Modes.override.lines = false;
       Modes.override.conNames = false;
@@ -18289,7 +18332,10 @@ function drawDoubleStars() {
        the very split it exists to show. A companion past the display limit
        gets the smallest dot on the chart, which is what a faint star looks
        like. */
-    ctx.arc(p.x, p.y, Math.max(0.45,
+    /* Never below a pixel: at very high magnification the shrink term took
+       the companion down to 0.45 of a pixel, which is drawn and cannot be
+       seen - separated and invisible is not an improvement. */
+    ctx.arc(p.x, p.y, Math.max(0.9,
             starRadius(Math.min(d.magB, dispLim), dispLim, k) * 0.75), 0, TAU);
     ctx.fill();
   }
