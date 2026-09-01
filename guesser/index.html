@@ -1731,6 +1731,171 @@ function segSteps(a, b) {
   var d = sepDeg(a[0], a[1], b[0], b[1]);
   return clamp(Math.ceil(d / 2), 1, 90);
 }
+/* ---------------------------------------------------- best-fit sky circle
+
+   Drawing a circle on a chart is not the same as marking six points that
+   happen to lie on one. In the room you put the compass down, or you lay the
+   pencil along three or four stars and swing the curve through them - what you
+   hand in is the curve. So that is what this builds: the circle that best fits
+   the points placed so far, redrawn every time one is added.
+
+   The fit is a plane fit, which is the whole trick. Every circle on a sphere -
+   great or small - is the intersection of the sphere with a plane v·n = c, so
+   fitting a circle to unit vectors is fitting a plane to them: n comes out as
+   the smallest-eigenvalue eigenvector of the scatter matrix about the centroid,
+   and c as the centroid's height along n. A great circle is simply the case
+   where c came out as zero, so the equator, the ecliptic, a circumpolar
+   boundary and an equal-altitude circle are all the same computation.
+
+   Three points give one exact circle; more than three are averaged, which is
+   what "best fit" means and why a slightly shaky hand still gets the curve it
+   was aiming for. */
+
+function vAdd(a, b) { return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]; }
+function vDot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+function vCross(a, b) {
+  return [a[1] * b[2] - a[2] * b[1],
+          a[2] * b[0] - a[0] * b[2],
+          a[0] * b[1] - a[1] * b[0]];
+}
+function vScale(a, k) { return [a[0] * k, a[1] * k, a[2] * k]; }
+function vUnit(a) {
+  var n = Math.sqrt(vDot(a, a));
+  return n > 1e-12 ? vScale(a, 1 / n) : null;
+}
+
+/* Eigenvector of the smallest eigenvalue of a symmetric 3x3, in closed form.
+
+   Power iteration was tried first and is wrong here. On a short arc the two
+   smallest eigenvalues are almost equal - one is the plane normal, the other
+   the sagitta of the arc - and iteration cannot separate them: four points on
+   the equator spanning 24 degrees came back as a small circle of radius 24
+   about a pole 23 degrees south, when the answer was the equator exactly.
+
+   A symmetric 3x3 has closed-form eigenvalues, so use them (Smith's method):
+   the characteristic cubic of the traceless part is solved with a cosine, and
+   the eigenvector follows from the cross product of two independent rows of
+   (S - lambda I) - taking whichever pair of rows is furthest from parallel,
+   which is what keeps it stable when the matrix is near-degenerate. */
+function smallestEigenvector(S) {
+  var p1 = S[0][1] * S[0][1] + S[0][2] * S[0][2] + S[1][2] * S[1][2];
+  var q = (S[0][0] + S[1][1] + S[2][2]) / 3;
+  var lam;
+  if (p1 < 1e-24) {
+    /* Already diagonal: the answer is an axis. */
+    lam = Math.min(S[0][0], Math.min(S[1][1], S[2][2]));
+  } else {
+    var p2 = (S[0][0] - q) * (S[0][0] - q) + (S[1][1] - q) * (S[1][1] - q) +
+             (S[2][2] - q) * (S[2][2] - q) + 2 * p1;
+    var p = Math.sqrt(p2 / 6);
+    var B = [[(S[0][0] - q) / p, S[0][1] / p, S[0][2] / p],
+             [S[1][0] / p, (S[1][1] - q) / p, S[1][2] / p],
+             [S[2][0] / p, S[2][1] / p, (S[2][2] - q) / p]];
+    var det = B[0][0] * (B[1][1] * B[2][2] - B[1][2] * B[2][1]) -
+              B[0][1] * (B[1][0] * B[2][2] - B[1][2] * B[2][0]) +
+              B[0][2] * (B[1][0] * B[2][1] - B[1][1] * B[2][0]);
+    var phi = Math.acos(clamp(det / 2, -1, 1)) / 3;
+    lam = q + 2 * p * Math.cos(phi + 2 * Math.PI / 3);      // the smallest root
+  }
+
+  var M = [[S[0][0] - lam, S[0][1], S[0][2]],
+           [S[1][0], S[1][1] - lam, S[1][2]],
+           [S[2][0], S[2][1], S[2][2] - lam]];
+  var pairs = [[0, 1], [0, 2], [1, 2]], best = null, bestLen = 0, i;
+  for (i = 0; i < pairs.length; i++) {
+    var c = vCross(M[pairs[i][0]], M[pairs[i][1]]);
+    var len = Math.sqrt(vDot(c, c));
+    if (len > bestLen) { bestLen = len; best = c; }
+  }
+  return best ? vUnit(best) : null;
+}
+
+/* { axis, cos, radiusDeg, rms } for the circle that best fits these points,
+   or null when they cannot define one. */
+function fitSkyCircle(pts) {
+  if (!pts || pts.length < 2) return null;
+  var v = pts.map(function (p) { return toVec(p[0], p[1]); }), i, j;
+
+  if (pts.length === 2) {
+    /* Two points leave a whole family of circles through them, so take the one
+       every chart question means: the great circle. */
+    var ax = vUnit(vCross(v[0], v[1]));
+    return ax ? { axis: ax, cos: 0, radiusDeg: 90, rms: 0, exact: true } : null;
+  }
+
+  var m = [0, 0, 0];
+  for (i = 0; i < v.length; i++) m = vAdd(m, v[i]);
+  m = vScale(m, 1 / v.length);
+
+  var S = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  for (i = 0; i < v.length; i++) {
+    var d = [v[i][0] - m[0], v[i][1] - m[1], v[i][2] - m[2]];
+    for (j = 0; j < 3; j++) {
+      S[j][0] += d[j] * d[0]; S[j][1] += d[j] * d[1]; S[j][2] += d[j] * d[2];
+    }
+  }
+  var axis = smallestEigenvector(S);
+  if (!axis) return null;
+  var c = vDot(axis, m);
+  if (c < 0) { axis = vScale(axis, -1); c = -c; }
+  c = clamp(c, -1, 1);
+
+  /* How far the points themselves sit from the curve they produced - the
+     honest measure of how steady the drawing was. */
+  var sum = 0;
+  for (i = 0; i < v.length; i++) {
+    var e = Math.acos(clamp(vDot(axis, v[i]), -1, 1)) - Math.acos(c);
+    sum += e * e;
+  }
+  return { axis: axis, cos: c,
+           radiusDeg: Math.acos(c) * 180 / Math.PI,
+           rms: Math.sqrt(sum / v.length) * 180 / Math.PI,
+           exact: pts.length === 3 };
+}
+
+/* The stretch of the fitted circle that the clicks actually cover, as a list
+   of [ra, dec] - so what is drawn is an arc from the first point to the last,
+   not the whole ring. Returns { path, spanDeg } or null. */
+function fittedCircleArc(pts, closeIt) {
+  var fit = fitSkyCircle(pts);
+  if (!fit) return null;
+  var n = fit.axis;
+  var u = vUnit(vCross(n, Math.abs(n[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0]));
+  if (!u) return null;
+  var w = vCross(n, u);
+  var rad = Math.acos(clamp(fit.cos, -1, 1));
+  var sr = Math.sin(rad), cr = Math.cos(rad);
+
+  function at(th) {
+    return [n[0] * cr + (u[0] * Math.cos(th) + w[0] * Math.sin(th)) * sr,
+            n[1] * cr + (u[1] * Math.cos(th) + w[1] * Math.sin(th)) * sr,
+            n[2] * cr + (u[2] * Math.cos(th) + w[2] * Math.sin(th)) * sr];
+  }
+
+  var TAU2 = Math.PI * 2;
+  var angs = pts.map(function (p) {
+    var a = toVec(p[0], p[1]);
+    return (Math.atan2(vDot(a, w), vDot(a, u)) + TAU2) % TAU2;
+  }).sort(function (a, b) { return a - b; });
+
+  /* The arc you drew is everything except the biggest gap between clicks -
+     which is also what stops a curve drawn across the top of the sky from
+     being closed the long way round through the ground. */
+  /* The arc begins where the biggest gap ends, and runs forward through
+     every click - starting at the gap's near edge instead would draw the
+     empty side of the circle. */
+  var gap = TAU2 - (angs[angs.length - 1] - angs[0]), start = angs[0];
+  for (var i = 1; i < angs.length; i++) {
+    var g = angs[i] - angs[i - 1];
+    if (g > gap) { gap = g; start = angs[i]; }
+  }
+  var span = closeIt ? TAU2 : TAU2 - gap;
+  var steps = Math.max(24, Math.round(span * 180 / Math.PI / 1.5));
+  var path = [];
+  for (var k = 0; k <= steps; k++) path.push(fromVec(at(start + span * k / steps)));
+  return { path: path, spanDeg: span * 180 / Math.PI, fit: fit };
+}
+
 function slerp(a, b, t) {
   var va = toVec(a[0], a[1]), vb = toVec(b[0], b[1]);
   var dot = clamp(va[0] * vb[0] + va[1] * vb[1] + va[2] * vb[2], -1, 1);
@@ -2494,12 +2659,18 @@ function drawOverlays() {
         break;
       }
       case 'trace': {
-        /* The curve the player is drawing in exam mode. */
+        /* The curve the player is drawing. With `fit`, the points are treated
+           as construction marks for one circle and the fitted arc is what gets
+           drawn - which is how it is done on paper, and means three good
+           points beat nine shaky ones. */
         var tp = o.pts || [];
         if (!tp.length) return;
         if (tp.length > 1) {
-          ctx.strokeStyle = '#ffc14d'; ctx.lineWidth = 2; ctx.setLineDash([]);
-          strokeGreatCircle(tp, !!o.closed);
+          ctx.strokeStyle = o.colour || '#ffc14d';
+          ctx.lineWidth = 2; ctx.setLineDash([]);
+          var arc = o.fit ? fittedCircleArc(tp, !!o.closed) : null;
+          if (arc) strokeGreatCircle(arc.path, false);
+          else strokeGreatCircle(tp, !!o.closed);
         }
         ctx.fillStyle = '#ffc14d';
         tp.forEach(function (q, qi) {
@@ -6775,7 +6946,7 @@ var CIRCLE_REGION_TOL = 12;
    So the points are joined as you place them, the whole drawn curve is what
    gets measured, and it has to be carried far enough round the sky to be a
    trace of a great circle rather than a mark near one. */
-var CIRCLE_TRACE_MIN = 8;
+var CIRCLE_TRACE_MIN = 4;
 var CIRCLE_TRACE_ARC = 90;    // degrees of arc before it counts as traced
 
 function circleIsRegion(m) { return !m || m.off == null; }
@@ -6834,7 +7005,7 @@ function circleMarkOverlays(faint) {
 function circleTraceOverlays(step) {
   var out = step === 2 ? circleMarkOverlays(true) : [];
   if (LearnCircles.trace.length) {
-    out = out.concat([{ t: 'trace', pts: LearnCircles.trace, closed: false }]);
+    out = out.concat([{ t: 'trace', pts: LearnCircles.trace, fit: true, closed: false }]);
   }
   return out;
 }
@@ -6930,9 +7101,10 @@ LEARN_TOPICS.circles = {
       }
     } else {
       body = '<div class="q">Trace <span class="target">' + esc(c.name) + '</span></div>' +
-        '<div class="note">Click along where it runs — the points are joined as ' +
-        'you go, so what you draw is the line you are drawing. ' + CIRCLE_TRACE_MIN +
-        ' points or more, carried at least ' + CIRCLE_TRACE_ARC + '° round the sky.</div>' +
+        '<div class="note">Click along where it runs — the best-fit arc through ' +
+        'your points is drawn as you place them, so ' + CIRCLE_TRACE_MIN + ' good ones ' +
+        'beat a dozen shaky ones. Carry it at least ' + CIRCLE_TRACE_ARC + '° round the ' +
+        'sky.</div>' +
         (step === 2 && LearnCircles.placed.length
           ? '<div class="note">The faint marks are the ones you placed. Run the ' +
             'line through them.</div>' : '') +
@@ -7078,13 +7250,18 @@ LEARN_TOPICS.circles = {
        between consecutive clicks, so a pair of points either side of a corner
        is caught by the arc that joins them rather than excused by them. It
        also reports how much arc you actually drew. */
-    var r = scoreTrace(pts, { pole: c.pole }, false);
+    /* Grade the curve that was drawn - the fitted arc - rather than the
+       construction points that produced it. */
+    var arcFit = fittedCircleArc(pts);
+    var r = arcFit ? scoreTrace(arcFit.path, { pole: c.pole }, false)
+                   : scoreTrace(pts, { pole: c.pole }, false);
+    if (arcFit) r.arc = arcFit.spanDeg;
     var far = r.arc >= CIRCLE_TRACE_ARC;
     var ok = r.mean <= 3 && r.max <= 8 && far;
     LearnCircles.answered = true;
     recordAnswer('learn-circles', ok);
     Sky.overlays = [{ t: 'greatcircle', pole: c.pole, colour: '#57d5e8' },
-                    { t: 'trace', pts: pts, closed: false }]
+                    { t: 'trace', pts: pts, fit: true, closed: false }]
       .concat(circleOverlays(c, false, true));
     Sky.needsDraw = true;
     setHTML('lciOut', (ok
@@ -8104,7 +8281,7 @@ Modes.defs.exam = {
     var t = Exam.list[Exam.qi];
     if (t.kind === 'circle') {
       Exam.pts.push(rd);
-      Sky.overlays = [{ t: 'trace', pts: Exam.pts, closed: false }];
+      Sky.overlays = [{ t: 'trace', pts: Exam.pts, fit: true, closed: false }];
     } else if (t.kind === 'point' || t.kind === 'find' || t.kind === 'missing') {
       Exam.pts = [rd];
       Sky.overlays = [{ t: 'aim', rad: t.kind === 'point' ? 3 : 3 },
@@ -8123,13 +8300,16 @@ Modes.defs.exam = {
     Exam.answered = true;
 
     if (t.kind === 'circle') {
-      var r = scoreTrace(Exam.pts, t, true), g = band(r.mean, 2, 4, 8);
+      var examArc = fittedCircleArc(Exam.pts);
+      var r = examArc ? scoreTrace(examArc.path, t, false) : scoreTrace(Exam.pts, t, true);
+      if (examArc) r.arc = examArc.spanDeg;
+      var g = band(r.mean, 2, 4, 8);
       score = Math.max(0, Math.round(100 - r.mean * 11));
       if (r.arc < 120) score = Math.round(score * 0.6);
       head = verdict(g, 'Average error ' + fmtDeg(r.mean) + ', worst ' + fmtDeg(r.max) + '.');
       detail = note('You drew ' + r.arc.toFixed(0) + '° of arc' +
         (r.arc < 120 ? ' — a short stretch, so the score is reduced.' : '.'));
-      Sky.overlays = [{ t: 'trace', pts: Exam.pts, closed: true },
+      Sky.overlays = [{ t: 'trace', pts: Exam.pts, fit: true, closed: false },
                       { t: 'greatcircle', pole: t.pole, colour: '#56d98a' }];
 
     } else if (t.kind === 'point' || t.kind === 'find' || t.kind === 'missing') {
@@ -12533,7 +12713,8 @@ function mockSkyMapRound() {
   ['equator', 'ecliptic', 'meridian'].forEach(function (c) {
     T.push({ k: 'circle', which: c, marks: 5,
              text: 'Draw ' + mockCircleFor(c).name +
-                   ' on the chart — at least six points along it. If it runs through the ' +
+                   ' on the chart — four points or more, and the arc through them is '
+                   + 'drawn as you go. If it runs through the ' +
                    'zenith, remember it is a straight line across the chart, not a curve.' });
   });
 
@@ -12714,6 +12895,17 @@ function mockCircleFor(which) {
    Your own marks go on in pencil, the revealed truth in green. */
 
 var MOCK_TRUTH = '#56d98a';
+
+/* Circle questions: how many construction points, and how much of the circle
+   has to be drawn. Three define one exactly - the rest is showing that you
+   know where it runs, not helping the fit. */
+var MOCK_CIRCLE_MIN = 4;
+var MOCK_CIRCLE_ARC = 60;
+
+function mockIsCircleTask(t) {
+  return !!t && (t.k === 'circle' || t.k === 'sim-circle' ||
+                 t.k === 'small-circle' || t.k === 'star-path');
+}
 
 /* ------------------------------------------------ naming what you mark
 
@@ -13201,6 +13393,14 @@ Modes.defs.mock = {
 
   paint: function () {
     var t = mockTask(), extra = [];
+    /* A circle question is answered with a curve, so the clicks are treated as
+       construction points and the best-fit arc through them is drawn as you
+       place them - the way you would swing it through three or four stars with
+       a pair of compasses rather than leaving a row of dots. */
+    if (t && mockIsCircleTask(t) && Mock.picks.length > 1) {
+      extra.push({ t: 'trace', pts: Mock.picks.map(function (p) { return [p[0], p[1]]; }),
+                   fit: true, closed: false });
+    }
     Mock.picks.forEach(function (p, i) {
       extra.push({ t: 'circle', ra: p[0], dec: p[1], rad: 2.5, colour: '#ffc14d' });
       /* A named mark says its name on the chart, so you can see at a glance
@@ -13374,23 +13574,36 @@ Modes.defs.mock = {
 
     } else if (t.k === 'circle') {
       var pole = mockCircleFor(t.which).pole;
-      var need = 6;
+      var need = MOCK_CIRCLE_MIN;
       if (Mock.picks.length < need) {
         setHTML('mkOut', '<div class="verdict info">Place at least ' + need +
-          ' points.</div>');
+          ' points — ' + Mock.picks.length + ' so far.</div>');
         return;
       }
+      /* What is marked is the curve those points produced, sampled along its
+         whole length. Three points in one constellation define a circle
+         perfectly well and used to score full marks for it, so the arc has to
+         be carried across the sky as well as be in the right place. */
+      var arcFit = fittedCircleArc(Mock.picks.map(function (p) { return [p[0], p[1]]; }));
       var sum = 0, worst = 0;
-      Mock.picks.forEach(function (p) {
+      var samples = arcFit ? arcFit.path : Mock.picks;
+      samples.forEach(function (p) {
         var d = offCircle(p[0], p[1], pole);
         sum += d; if (d > worst) worst = d;
       });
-      var mean = sum / Mock.picks.length;
-      got = mean <= 4 ? 1 : 0;
-      detail = 'Average ' + mean.toFixed(1) + '° off, worst point ' + worst.toFixed(1) + '°.';
+      var mean = sum / samples.length;
+      var span = arcFit ? arcFit.spanDeg : 0;
+      var farEnough = span >= MOCK_CIRCLE_ARC;
+      got = (mean <= 4 && farEnough) ? 1 : 0;
+      detail = 'Your curve is ' + mean.toFixed(1) + '° off on average, ' +
+        worst.toFixed(1) + '° at its worst, over ' + span.toFixed(0) + '° of arc' +
+        (farEnough ? '.' : ' — under the ' + MOCK_CIRCLE_ARC +
+         '° that counts as drawing the circle.');
       Sky.overlays = mockHorizonOverlay().concat(
         [{ t: 'polyline', colour: '#57d5e8', width: 2, closed: true,
-           pts: circlePolyline(pole) }]);
+           pts: circlePolyline(pole) },
+         { t: 'trace', pts: Mock.picks.map(function (p) { return [p[0], p[1]]; }),
+           fit: true, closed: false }]);
 
     } else if (t.k === 'brightest') {
       want = t.pick;
@@ -15866,7 +16079,8 @@ function mockSimRound() {
   T.push({ k: 'sim-circle', marks: 6, which: which,
            text: 'Draw ' + (which === 'equator' ? 'the celestial equator'
                  : which === 'ecliptic' ? 'the ecliptic' : 'the galactic equator') +
-                 ' across the dome — at least six points along it.' });
+                 ' across the dome — four points or more, and the arc through them ' +
+                 'is drawn as you go.' });
 
   T.push({ k: 'sim-moon', marks: 4,
            illum: atm.moon.illum, waxing: atm.moon.waxing, alt: atm.moon.alt,
@@ -16010,15 +16224,25 @@ function mockCheckSimScope(t, ctx) {
     return { got: got, want: 4, detail: msg.join(', ') + ' from the true points.' };
   }
   if (t.k === 'sim-circle') {
-    if (picks.length < 6) return null;
+    if (picks.length < MOCK_CIRCLE_MIN) return null;
+    /* The dome is marked the same way as the chart: the curve your points
+       produced, over its whole length, and carried far enough to be a circle
+       drawn across the sky rather than a short accurate stroke. */
     var pole = ptLinePole(t.which), sum = 0, worst = 0;
-    picks.forEach(function (p) {
+    var domeArc = fittedCircleArc(picks.map(function (p) { return [p[0], p[1]]; }));
+    var domeSamples = domeArc ? domeArc.path : picks;
+    domeSamples.forEach(function (p) {
       var dd = offCircle(p[0], p[1], pole);
       sum += dd; if (dd > worst) worst = dd;
     });
-    var mean = sum / picks.length;
-    return { got: mean <= 4 ? 1 : 0, want: 1,
-             detail: 'Average ' + mean.toFixed(1) + '° off, worst ' + worst.toFixed(1) + '°.' };
+    var mean = sum / domeSamples.length;
+    var domeSpan = domeArc ? domeArc.spanDeg : 0;
+    var domeFar = domeSpan >= MOCK_CIRCLE_ARC;
+    return { got: (mean <= 4 && domeFar) ? 1 : 0, want: 1,
+             detail: 'Your curve is ' + mean.toFixed(1) + '° off on average, ' +
+                     worst.toFixed(1) + '° at its worst, over ' + domeSpan.toFixed(0) +
+                     '° of arc' + (domeFar ? '.' : ' — under the ' + MOCK_CIRCLE_ARC +
+                     '° that counts as drawing the circle.') };
   }
   if (t.k === 'scope-point') {
     if (!picks.length) return null;
