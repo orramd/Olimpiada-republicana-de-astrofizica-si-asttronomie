@@ -3881,12 +3881,17 @@ var Tools = {
 
      The radius is kept as a fraction of the chart's own radius rather than in
      pixels, so it stays glued to the stars through a zoom or a turn. */
-  /* fixedDeg: a radius typed in degrees. With one set, a single click puts
-     the centre down and swings the circle at exactly that angular radius -
-     which is what the papers ask for. The circumpolar circle is one whose
-     radius equals the latitude, and eyeballing that against a scale bar is
-     the sort of thing you get wrong at one in the morning. */
-  compass: { on: false, centre: null, radiusFrac: 0, fixedDeg: null },
+  /* fixedDeg: a radius typed in. With one set, a single click puts the centre
+     down and swings the circle at exactly that radius - which is what the
+     papers ask for. The circumpolar circle is one whose radius equals the
+     latitude, and eyeballing that against a scale bar is the sort of thing
+     you get wrong at one in the morning.
+
+     unit: 'cm' or 'deg'. Centimetres because that is how a real pair of
+     compasses is set - you open them against the ruler, and the ruler here
+     already reads in cm. Degrees because a few of the circles the papers ask
+     for are defined by an angle, not a length. */
+  compass: { on: false, centre: null, radiusFrac: 0, fixedDeg: null, unit: 'cm' },
   point: { on: false, name: '' },
   /* Ruler and compass both want the next click. Whichever you reached for last
      gets it, which is how it works on a desk - you are holding one of them. */
@@ -4078,9 +4083,18 @@ function toolsCompassClick(px, py) {
   /* A typed radius needs one click, not two. */
   var fixed = Tools.compass.fixedDeg;
   if (fixed > 0) {
-    var frac = toolsFracForDegrees([rd[0], rd[1]], fixed);
+    /* Centimetres are how you actually set a pair of compasses: you open them
+       against the ruler, not against an angle. On a printed chart that is the
+       natural instruction too - the papers give a radius in degrees for the
+       circumpolar circle, but everything you draw by hand you set in cm. So
+       both, and the label says which it was. */
+    var frac = Tools.compass.unit === 'cm'
+      ? (fixed * PX_PER_CM) / Math.max(1, Sky.scale)
+      : toolsFracForDegrees([rd[0], rd[1]], fixed);
     if (frac > 0) {
-      inkCircle([rd[0], rd[1]], frac, fmtDeg(fixed), 'tool');
+      inkCircle([rd[0], rd[1]], frac,
+                Tools.compass.unit === 'cm' ? fixed.toFixed(2) + ' cm' : fmtDeg(fixed),
+                'tool');
       Tools.compass.radiusFrac = frac;
     }
     Tools.compass.centre = null;
@@ -4373,9 +4387,12 @@ function toolsRender() {
   if (Tools.compass.on) {
     var cp = Tools.compass;
     bits.push('<div class="tool"><span class="lab">Compass</span>' +
-      '<input type="text" id="cpRad" placeholder="r°" title="A radius in degrees, ' +
-      'for an exact circle in one click. Empty: click centre, then edge." value="' +
-      (cp.fixedDeg != null ? cp.fixedDeg : '') + '" style="width:46px">' +
+      '<input type="text" id="cpRad" placeholder="r" title="A radius, for an ' +
+      'exact circle in one click. Empty: click centre, then edge." value="' +
+      (cp.fixedDeg != null ? cp.fixedDeg : '') + '" style="width:40px">' +
+      '<button class="btn sm" id="cpUnit" title="Set the radius in centimetres ' +
+      'on the paper, or in degrees on the sky">' +
+      (cp.unit === 'cm' ? 'cm' : '°') + '</button>' +
       '<b>' + (cp.fixedDeg > 0 ? 'click a centre'
                : cp.centre ? 'now the edge'
                : 'centre, then edge') + '</b>' +
@@ -4449,10 +4466,23 @@ function toolsRender() {
     if (el('cpRad')) {
       el('cpRad').addEventListener('input', function () {
         var v = parseFloat(String(this.value).replace(',', '.'));
-        /* Anything not a sensible angle means "no fixed radius", which is the
-           two-click behaviour, so an empty box is not a special case. */
-        Tools.compass.fixedDeg = (isFinite(v) && v > 0 && v <= 179) ? v : null;
+        /* Anything out of range means "no fixed radius", which is the two-click
+           behaviour, so an empty box is not a special case. */
+        var top = Tools.compass.unit === 'cm' ? 100 : 179;
+        Tools.compass.fixedDeg = (isFinite(v) && v > 0 && v <= top) ? v : null;
         Tools.compass.centre = null;
+      });
+    }
+    if (el('cpUnit')) {
+      el('cpUnit').addEventListener('click', function () {
+        /* Swap the unit but keep the number: 5 cm and 5 degrees are both
+           things you might want, and retyping it would be the annoying part. */
+        Tools.compass.unit = Tools.compass.unit === 'cm' ? 'deg' : 'cm';
+        var v = Tools.compass.fixedDeg;
+        var top = Tools.compass.unit === 'cm' ? 100 : 179;
+        if (v != null && v > top) Tools.compass.fixedDeg = null;
+        Tools.compass.centre = null;
+        toolsRender();
       });
     }
   }
@@ -14903,7 +14933,35 @@ Modes.defs.scope = {
     scopeApplyView(); this.render();
   },
   leave: function () { Scope.task = null; Sky.roll = 0; Sky.locked = false; },
-  onClick: function () { return false; },
+  /* Click to point there.
+
+     Dragging sweeps and the slow-motion buttons nudge, but the obvious thing -
+     see the thing off to one side, click it, have the tube go there - did
+     nothing at all. Exact, with none of scopeSlewTo's slop: that slop models
+     reading an object's coordinates off setting circles and turning the tube
+     blind, which lands it somewhere in the finder. This is the opposite. You
+     are looking at the field and moving what you can already see into the
+     middle, and a real mount's slow motions do exactly that.
+
+     Returns false so a click on a star still opens its card as well - you get
+     the object centred and identified, which is what looking at it means.
+     Not while a drift is being timed: the star has to cross the field on its
+     own for that measurement to mean anything. */
+  onClick: function (rd) {
+    if (!rd || !isFinite(rd[0]) || !isFinite(rd[1])) return false;
+    if (Scope.drift && Scope.drift.active) return false;
+    if (scopeThroughGlass()) {
+      Scope.ra = ptWrap(rd[0], 360);
+      Scope.dec = clamp(rd[1], -89.8, 89.8);
+    } else {
+      var aa = ptRaDecToAltAz(rd[0], rd[1], Scope.lat, scopeLst());
+      Scope.nakedAlt = clamp(aa.alt, -20, 88);
+      Scope.nakedAz = ((aa.az % 360) + 360) % 360;
+    }
+    scopeApplyView();
+    Sky.needsDraw = true;
+    return false;
+  },
   /* Space walks in towards the eyepiece: your own eyes, then the finder, then
      the eyepiece. Backspace walks back out. */
   advance: function () {
