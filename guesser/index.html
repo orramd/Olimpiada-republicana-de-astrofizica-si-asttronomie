@@ -3950,7 +3950,7 @@ function toolsSyncForMode(name) {
 }
 
 /* --------------------------------------------------------------------- ink */
-function inkAdd(m) { Tools.ink.push(m); Sky.needsDraw = true; }
+function inkAdd(m) { Tools.ink.push(m); Sky.needsDraw = true; return m; }
 function inkClear() {
   /* This control belongs to the ruler/compass bench. Exercise annotations are
      the student's accumulated work on the chart and must survive it. */
@@ -3973,8 +3973,8 @@ function inkDot(ra, dec, label, colour, source) {
            colour: colour || '#ffd479', source: source || 'chart' });
 }
 function inkLine(a, b, dashed, label, source) {
-  inkAdd({ t: 'line', a: a, b: b, dashed: dashed !== false,
-           label: label || '', source: source || 'chart' });
+  return inkAdd({ t: 'line', a: a, b: b, dashed: dashed !== false,
+                  label: label || '', source: source || 'chart' });
 }
 function inkCircle(centre, radiusDeg, label, source) {
   inkAdd({ t: 'circle', centre: centre, rad: radiusDeg,
@@ -4046,15 +4046,18 @@ function toolsRulerKeep() {
   if (Tools.ruler.arc) {
     inkPolyline(line ? toolsGreatCirclePath(p[0], p[1])
                      : toolsArcPath(p[0], p[1]), label, 'tool');
-  } else if (line) {
-    /* Keep it as the sky positions of the produced ends, so the traced line
-       stays put when the chart is turned or zoomed. */
-    var e = toolsExtendToEdge(p[0], p[1]);
-    var ra1 = unproject(e[0].x, e[0].y), ra2 = unproject(e[1].x, e[1].y);
-    if (ra1 && ra2) inkLine(ra1, ra2, true, label, 'tool');
-    else inkLine([p[0].ra, p[0].dec], [p[1].ra, p[1].dec], true, label, 'tool');
   } else {
-    inkLine([p[0].ra, p[0].dec], [p[1].ra, p[1].dec], true, label, 'tool');
+    /* A produced line is stored as the two points you clicked plus "carry on
+       past them", and is extended when it is drawn.
+
+       It used to be stored as the sky positions of the produced ends, and that
+       is why tracing one made it vanish: the ends are far outside the chart,
+       unproject hands back a direction that is not on the sheet at all, and
+       the mark was then anchored to two places that never project back. The
+       ends are not data - they depend on the size of the canvas. The two
+       clicks are the data. */
+    var m2 = inkLine([p[0].ra, p[0].dec], [p[1].ra, p[1].dec], true, label, 'tool');
+    if (line && m2) m2.extend = true;
   }
   return true;
 }
@@ -4326,8 +4329,21 @@ function drawInk() {
       ctx.beginPath(); ctx.arc(q.x, q.y, 1.2, 0, TAU); ctx.fill();
       if (m.label) toolsLabelAt(ctx, m.label, q.x, q.y - 15, colour);
     } else if (m.t === 'line') {
-      toolsStrokeSkyPath(ctx, [m.a, m.b], m.dashed);
       var a = projRaDec(m.a[0], m.a[1]), b = projRaDec(m.b[0], m.b[1]);
+      if (m.extend) {
+        /* Produced at draw time, so it reaches the edge of whatever the canvas
+           is now and survives a zoom, a pan and a turn of the sheet. */
+        if (a && b) {
+          var ends = toolsExtendToEdge(a, b);
+          ctx.setLineDash(m.dashed ? [5, 4] : []);
+          ctx.beginPath();
+          ctx.moveTo(ends[0].x, ends[0].y);
+          ctx.lineTo(ends[1].x, ends[1].y);
+          ctx.stroke();
+        }
+      } else {
+        toolsStrokeSkyPath(ctx, [m.a, m.b], m.dashed);
+      }
       if (a && b && m.label) toolsLabelAt(ctx, m.label, (a.x + b.x) / 2, (a.y + b.y) / 2 - 12, colour);
     } else if (m.t === 'poly') {
       toolsStrokeSkyPath(ctx, m.pts, true);
@@ -6738,13 +6754,21 @@ var LearnCircles = { id: 'equator', idx: 0, answered: false,
                         and where you put each one */
                      mk: 0, placed: [], mkDone: false };
 
-/* Only landmarks with a measured position can be marked; the prose ones
-   ("the neck of Hydra") are shape notes and stay in the study walk. */
+/* Every landmark has a position, so every one of them can be marked. */
 function circlePlaceable(c) {
   return (c.marks || []).filter(function (m) { return m.ra != null; });
 }
 
-var CIRCLE_MARK_TOL = 5;      // degrees; a naked-eye chart is not a micrometer
+/* Degrees. A naked-eye chart is not a micrometer, and some of these landmarks
+   are not points: "the neck of Hydra" and "the middle of Ophiuchus" name a
+   region the circle runs through, which is why the catalogue claims no
+   measured offset for them. Holding an area to the same five degrees as
+   Regulus would be marking a different question from the one asked. */
+var CIRCLE_MARK_TOL = 5;
+var CIRCLE_REGION_TOL = 12;
+
+function circleIsRegion(m) { return !m || m.off == null; }
+function circleTolFor(m) { return circleIsRegion(m) ? CIRCLE_REGION_TOL : CIRCLE_MARK_TOL; }
 
 function circleById(id) {
   var all = DATA.circles || [];
@@ -6789,7 +6813,7 @@ function circleOverlays(c, showLine, showMarks, cur) {
 function circleMarkOverlays(faint) {
   return LearnCircles.placed.map(function (q) {
     return { t: 'circle', ra: q.ra, dec: q.dec, rad: faint ? 0.9 : 1.1,
-             colour: faint ? '#7a6a3e' : (q.err <= CIRCLE_MARK_TOL ? '#56d98a' : '#ff6b6b') };
+             colour: faint ? '#7a6a3e' : (q.ok ? '#56d98a' : '#ff6b6b') };
   });
 }
 
@@ -6861,10 +6885,10 @@ LEARN_TOPICS.circles = {
         var errs = LearnCircles.placed.map(function (q) { return q.err; });
         var mean = errs.length
           ? errs.reduce(function (a, b) { return a + b; }, 0) / errs.length : 0;
-        var right = errs.filter(function (e) { return e <= CIRCLE_MARK_TOL; }).length;
+        var right = LearnCircles.placed.filter(function (q) { return q.ok; }).length;
         body = '<div class="verdict ' + (right === errs.length ? 'ok' : right ? 'info' : 'no') +
-          '"><b>' + right + ' of ' + errs.length + '</b> within ' + CIRCLE_MARK_TOL +
-          ' degrees, ' + mean.toFixed(1) + ' degrees out on average.</div>' +
+          '"><b>' + right + ' of ' + errs.length + '</b> placed, ' +
+          mean.toFixed(1) + '° out on average.</div>' +
           '<div class="note">Your marks stay on the sky for the next step: the line ' +
           'you draw should run through them.</div>' +
           '<div class="btnrow"><button class="btn sm primary" id="lciTrace">Trace it now</button>' +
@@ -6873,7 +6897,11 @@ LEARN_TOPICS.circles = {
         body = '<div class="q">Mark <span class="target">' + esc(pm.text) + '</span></div>' +
           '<div class="note">Landmark <b>' + (LearnCircles.mk + 1) + '</b> of <b>' +
           place.length + '</b> · ' + esc(c.name) + ' · click where it is. The circle ' +
-          'is not drawn and the stars are not labelled - that is the point.</div>' +
+          'is not drawn and the stars are not labelled — that is the point.</div>' +
+          '<div class="note">' + (circleIsRegion(pm)
+            ? 'A region rather than a single star, so anything within <b>' +
+              CIRCLE_REGION_TOL + '°</b> of it counts.'
+            : 'Within <b>' + CIRCLE_MARK_TOL + '°</b> counts.') + '</div>' +
           '<div class="btnrow"><button class="btn sm" id="lciSkip">Skip it</button>' +
           '<button class="btn sm" id="lciAgain">Start again</button></div>' +
           '<div id="lciOut"></div>';
@@ -6991,9 +7019,10 @@ LEARN_TOPICS.circles = {
     var c = circleById(LearnCircles.id), place = circlePlaceable(c);
     var m = place[LearnCircles.mk];
     if (!m || LearnCircles.answered) return false;
-    var err = sepDeg(rd[0], rd[1], m.ra, m.dec), ok = err <= CIRCLE_MARK_TOL;
+    var tol = circleTolFor(m);
+    var err = sepDeg(rd[0], rd[1], m.ra, m.dec), ok = err <= tol;
     LearnCircles.placed.push({ ra: rd[0], dec: rd[1], truth: [m.ra, m.dec],
-                               err: err, text: m.text });
+                               err: err, tol: tol, ok: ok, text: m.text });
     LearnCircles.answered = true;
     recordAnswer('learn-circles', ok);
     Sky.overlays = circleMarkOverlays().concat([
@@ -7003,7 +7032,8 @@ LEARN_TOPICS.circles = {
     Sky.needsDraw = true;
     var self = this;
     setHTML('lciOut', '<div class="verdict ' + (ok ? 'ok' : 'no') + '"><b>' +
-      err.toFixed(1) + ' degrees out.</b> The green ring is where it is.</div>' +
+      err.toFixed(1) + '° out</b> — ' + (ok ? 'inside' : 'outside') + ' the ' +
+      tol + '° this one allows. The green ring is where it is.</div>' +
       '<div class="btnrow"><button class="btn sm primary" id="lciMkNext">Next</button></div>');
     el('lciMkNext').addEventListener('click', function () { self.markNext(); });
     return true;
