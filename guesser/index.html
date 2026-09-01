@@ -6721,9 +6721,30 @@ LEARN_TOPICS.coord = {
    ========================================================================== */
 'use strict';
 
-var CIRCLE_STEPS = ['Study it', 'Which circle is this?', 'Trace it'];
-var LearnCircles = { id: 'equator', idx: 0, answered: false, guess: null,
-                     trace: [], result: null, showList: false };
+/* The order is the lesson. You learn what the circle runs through, you put
+   those landmarks back on the sky yourself, and only then do you draw the line
+   - first with the constellation figures under it, then on a sky with nothing
+   drawn on it at all, which is the sheet you actually get.
+
+   "Which circle is this?" used to sit in the middle of that and did not belong:
+   being shown a line and picking its name from three buttons is not a step
+   towards drawing one, and you can pass it by elimination without knowing a
+   single landmark. */
+var CIRCLE_STEPS = ['Study it', 'Mark the landmarks',
+                    'Trace - figures shown', 'Trace - from memory'];
+var LearnCircles = { id: 'equator', idx: 0, answered: false,
+                     trace: [], result: null, showList: false,
+                     /* the marking walk: which landmark is being asked for,
+                        and where you put each one */
+                     mk: 0, placed: [], mkDone: false };
+
+/* Only landmarks with a measured position can be marked; the prose ones
+   ("the neck of Hydra") are shape notes and stay in the study walk. */
+function circlePlaceable(c) {
+  return (c.marks || []).filter(function (m) { return m.ra != null; });
+}
+
+var CIRCLE_MARK_TOL = 5;      // degrees; a naked-eye chart is not a micrometer
 
 function circleById(id) {
   var all = DATA.circles || [];
@@ -6762,6 +6783,16 @@ function circleOverlays(c, showLine, showMarks, cur) {
   return out;
 }
 
+/* The marks you have placed so far. Faint once they are behind you, so they
+   are context and not a second set of answers competing with the current one;
+   `faint` makes the whole set quiet, which is what the tracing steps want. */
+function circleMarkOverlays(faint) {
+  return LearnCircles.placed.map(function (q) {
+    return { t: 'circle', ra: q.ra, dec: q.dec, rad: faint ? 0.9 : 1.1,
+             colour: faint ? '#7a6a3e' : (q.err <= CIRCLE_MARK_TOL ? '#56d98a' : '#ff6b6b') };
+  });
+}
+
 /* Landmarks that have a position, in the taught order. Prose-only entries
    ("the neck of Hydra") stay in the walk - they are part of the lesson - so
    the walk indexes c.marks directly and the fly-to is what skips them. */
@@ -6772,7 +6803,10 @@ LEARN_TOPICS.circles = {
     var self = this, step = Learn.step, c = circleById(LearnCircles.id);
 
     Modes.override = {
-      lines: true, conNames: step === 0, bounds: false,
+      /* The last step is the exam's own sheet: the stars, and nothing else.
+         Everything before it keeps the figures, because a landmark you cannot
+         place against a constellation is not a landmark yet. */
+      lines: step !== 3, conNames: step === 0, bounds: false,
       dsos: false, dsoLabels: false, grid: false,
       ecliptic: false, galactic: false, refPoints: false,
       starLabels: step === 0 ? 'bayer' : 'none'
@@ -6822,14 +6856,35 @@ LEARN_TOPICS.circles = {
             }).join('') + '</div>'
           : '');
     } else if (step === 1) {
-      body = '<div class="q">Which circle is drawn?</div>' +
-        '<div class="btnrow">' + (DATA.circles || []).map(function (x) {
-          return '<button class="btn sm" data-cid="' + x.id + '">' + esc(x.name) + '</button>';
-        }).join('') + '</div><div id="lciOut"></div>';
+      var place = circlePlaceable(c), pm = place[LearnCircles.mk];
+      if (LearnCircles.mkDone || !pm) {
+        var errs = LearnCircles.placed.map(function (q) { return q.err; });
+        var mean = errs.length
+          ? errs.reduce(function (a, b) { return a + b; }, 0) / errs.length : 0;
+        var right = errs.filter(function (e) { return e <= CIRCLE_MARK_TOL; }).length;
+        body = '<div class="verdict ' + (right === errs.length ? 'ok' : right ? 'info' : 'no') +
+          '"><b>' + right + ' of ' + errs.length + '</b> within ' + CIRCLE_MARK_TOL +
+          ' degrees, ' + mean.toFixed(1) + ' degrees out on average.</div>' +
+          '<div class="note">Your marks stay on the sky for the next step: the line ' +
+          'you draw should run through them.</div>' +
+          '<div class="btnrow"><button class="btn sm primary" id="lciTrace">Trace it now</button>' +
+          '<button class="btn sm" id="lciAgain">Mark them again</button></div>';
+      } else {
+        body = '<div class="q">Mark <span class="target">' + esc(pm.text) + '</span></div>' +
+          '<div class="note">Landmark <b>' + (LearnCircles.mk + 1) + '</b> of <b>' +
+          place.length + '</b> · ' + esc(c.name) + ' · click where it is. The circle ' +
+          'is not drawn and the stars are not labelled - that is the point.</div>' +
+          '<div class="btnrow"><button class="btn sm" id="lciSkip">Skip it</button>' +
+          '<button class="btn sm" id="lciAgain">Start again</button></div>' +
+          '<div id="lciOut"></div>';
+      }
     } else {
       body = '<div class="q">Trace <span class="target">' + esc(c.name) + '</span></div>' +
         '<div class="note">Click along where it runs — six points or more. ' +
         'Nothing is drawn until you check.</div>' +
+        (step === 2 && LearnCircles.placed.length
+          ? '<div class="note">The faint marks are the ones you placed. Run the ' +
+            'line through them.</div>' : '') +
         '<div class="note">Placed <b id="lciN">' + LearnCircles.trace.length + '</b></div>' +
         '<div class="btnrow"><button class="btn sm primary" id="lciCheck">Check</button>' +
         '<button class="btn sm" id="lciUndo">Undo</button>' +
@@ -6849,16 +6904,16 @@ LEARN_TOPICS.circles = {
     ltBindSteps(function (k) {
       Learn.step = k;
       LearnCircles.answered = false; LearnCircles.trace = []; LearnCircles.result = null;
-      if (k === 1) {
-        var all = DATA.circles || [];
-        LearnCircles.id = all[Math.floor(Math.random() * all.length)].id;
-      }
+      if (k === 1) { LearnCircles.mk = 0; LearnCircles.placed = []; LearnCircles.mkDone = false; }
       self.render();
     });
     el('lciPick').addEventListener('change', function () {
       LearnCircles.id = this.value;
       LearnCircles.idx = 0;
       LearnCircles.answered = false; LearnCircles.trace = []; LearnCircles.result = null;
+      /* Another circle has other landmarks, so marks placed for the last one
+         are not evidence about this one. */
+      LearnCircles.mk = 0; LearnCircles.placed = []; LearnCircles.mkDone = false;
       self.render();
     });
 
@@ -6888,14 +6943,31 @@ LEARN_TOPICS.circles = {
         });
       }
     } else if (step === 1) {
-      Sky.overlays = circleOverlays(c, true, false);
-      document.querySelectorAll('#stage [data-cid]').forEach(function (b) {
-        b.addEventListener('click', function () { self.guess(b.dataset.cid); });
-      });
+      Sky.overlays = circleMarkOverlays();
+      /* Wide enough to have somewhere to look, and left where you had it -
+         being flown to the answer would be the whole exercise given away. */
+      if (Sky.fov < 70) { Sky.fov = 110; updateBasis(); }
+      if (el('lciTrace')) {
+        el('lciTrace').addEventListener('click', function () {
+          Learn.step = 2; LearnCircles.trace = []; LearnCircles.answered = false;
+          self.render();
+        });
+      }
+      if (el('lciAgain')) {
+        el('lciAgain').addEventListener('click', function () {
+          LearnCircles.mk = 0; LearnCircles.placed = []; LearnCircles.mkDone = false;
+          LearnCircles.answered = false;
+          self.render();
+        });
+      }
+      if (el('lciSkip')) {
+        el('lciSkip').addEventListener('click', function () { self.markNext(); });
+      }
     } else {
-      Sky.overlays = LearnCircles.trace.map(function (p) {
-        return { t: 'circle', ra: p[0], dec: p[1], rad: 0.8, colour: '#ffc14d' };
-      });
+      Sky.overlays = (step === 2 ? circleMarkOverlays(true) : []).concat(
+        LearnCircles.trace.map(function (p) {
+          return { t: 'circle', ra: p[0], dec: p[1], rad: 0.8, colour: '#ffc14d' };
+        }));
       el('lciCheck').addEventListener('click', function () { self.check(); });
       el('lciUndo').addEventListener('click', function () {
         LearnCircles.trace.pop();
@@ -6911,17 +6983,38 @@ LEARN_TOPICS.circles = {
     Sky.needsDraw = true;
   },
 
-  guess: function (id) {
-    if (LearnCircles.answered) return;
+  /* One click per landmark: you commit, then you are shown where it really was
+     and how far out you were. Seeing the truth only after the answer is the
+     part that teaches - a mark you can correct while placing it teaches the
+     mouse, not the sky. */
+  place: function (rd) {
+    var c = circleById(LearnCircles.id), place = circlePlaceable(c);
+    var m = place[LearnCircles.mk];
+    if (!m || LearnCircles.answered) return false;
+    var err = sepDeg(rd[0], rd[1], m.ra, m.dec), ok = err <= CIRCLE_MARK_TOL;
+    LearnCircles.placed.push({ ra: rd[0], dec: rd[1], truth: [m.ra, m.dec],
+                               err: err, text: m.text });
     LearnCircles.answered = true;
-    var ok = id === LearnCircles.id, c = circleById(LearnCircles.id);
     recordAnswer('learn-circles', ok);
-    Sky.overlays = circleOverlays(c, true, true);
+    Sky.overlays = circleMarkOverlays().concat([
+      { t: 'circle', ra: m.ra, dec: m.dec, rad: 2.2, colour: '#56d98a' },
+      { t: 'circle', ra: rd[0], dec: rd[1], rad: 1.2, colour: ok ? '#56d98a' : '#ff6b6b' }
+    ]);
     Sky.needsDraw = true;
-    setHTML('lciOut', (ok
-      ? '<div class="verdict ok"><b>Yes — ' + esc(c.name) + '.</b></div>'
-      : '<div class="verdict no"><b>That was ' + esc(c.name) + '.</b></div>') +
-      '<div class="note">Its landmarks are ringed on the sky.</div>');
+    var self = this;
+    setHTML('lciOut', '<div class="verdict ' + (ok ? 'ok' : 'no') + '"><b>' +
+      err.toFixed(1) + ' degrees out.</b> The green ring is where it is.</div>' +
+      '<div class="btnrow"><button class="btn sm primary" id="lciMkNext">Next</button></div>');
+    el('lciMkNext').addEventListener('click', function () { self.markNext(); });
+    return true;
+  },
+
+  markNext: function () {
+    var c = circleById(LearnCircles.id);
+    LearnCircles.answered = false;
+    LearnCircles.mk++;
+    if (LearnCircles.mk >= circlePlaceable(c).length) LearnCircles.mkDone = true;
+    this.render();
   },
 
   check: function () {
@@ -6951,7 +7044,8 @@ LEARN_TOPICS.circles = {
   },
 
   onClick: function (rd) {
-    if (Learn.step !== 2 || LearnCircles.answered) return false;
+    if (Learn.step === 1) return this.place(rd);
+    if ((Learn.step !== 2 && Learn.step !== 3) || LearnCircles.answered) return false;
     LearnCircles.trace.push([rd[0], rd[1]]);
     var n = el('lciN');
     if (n) n.textContent = LearnCircles.trace.length;
