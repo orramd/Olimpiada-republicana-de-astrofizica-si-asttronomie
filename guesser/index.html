@@ -293,7 +293,7 @@ html.ui-mobile *,html.ui-mobile *::before,html.ui-mobile *::after{ box-sizing: b
   </div>
   <label class="row"><input type="checkbox" id="magToDso"><span>Hide faint deep-sky objects too</span></label>
   <label class="row"><input type="checkbox" id="optThinOut" checked><span>Thin out stars when zoomed out</span></label>
-  <label class="row"><input type="checkbox" id="optPrintChart"><span>Printed chart &mdash; white paper</span></label>
+  <label class="row"><input type="checkbox" id="optPrintChart"><span>Olympiad chart &mdash; black and white</span></label>
   <div class="slider" style="margin-top:8px">
     <div class="lab"><span>How fast a star grows with brightness</span><b id="starGrowthOut">90%</b></div>
     <input type="range" id="starGrowth" min="0.5" max="1.4" step="0.02" value="0.9">
@@ -839,6 +839,303 @@ function saveStore(o) {
   var data = o || STORE;
   if (!data) return;
   try { localStorage.setItem(STORE_KEY, JSON.stringify(data)); } catch (e) { /* private mode */ }
+  /* And up to the account, if there is one. Coalesced, because this is
+     called on every answered question and that would otherwise be a
+     request a second. Declared later in the shared layer, so check. */
+  if (typeof authPushSoon === 'function') authPushSoon();
+}
+
+/* ---- js/05-auth.js ---- */
+/* ==========================================================================
+   Accounts.
+
+   The app is a single HTML file on a static host, so there is no server here
+   to check a password against - which is why a password typed into JavaScript
+   on this page could never be real security: it would be sitting in the source
+   for anyone to read. Supabase is that missing server. It holds the accounts,
+   it checks the passwords, and it holds one row of saved progress per person.
+
+   No SDK. The three calls this needs are plain HTTPS and the SDK is fifty
+   kilobytes that would have to be inlined into a file that is already two
+   megabytes:
+
+     POST /auth/v1/token?grant_type=password        sign in
+     POST /auth/v1/token?grant_type=refresh_token   keep the session alive
+     GET|POST /rest/v1/progress                     read and write the save
+
+   The publishable key below is meant to be public - it identifies the project,
+   it does not authorise anything. What protects the data is Row Level Security
+   in the database: every policy is `auth.uid() = user_id`, so the database
+   itself refuses to return a row that is not yours, no matter who is asking or
+   what key they hold.
+
+   Sign-ups are turned off in the project, so the only accounts that exist are
+   the ones created by hand in the Supabase dashboard. That is the gate: not
+   the page, the account list.
+   ========================================================================== */
+'use strict';
+
+var AUTH = {
+  url: 'https://omgkhkliojjipwlnmvwq.supabase.co',
+  key: 'sb_publishable_yvvJinTWo0BtCM8vUoaecg_yqTedYlp',
+  /* Where the app runs for real. Anywhere else - a local file, the dev server,
+     a checkout of the repository - runs without accounts, so development does
+     not need a login and does not touch anybody's saved progress. */
+  host: 'oraa2026.space'
+};
+
+var AUTH_SESSION_KEY = 'stellar-guesser-plus.session.v1';
+
+var Auth = {
+  session: null,          // { access_token, refresh_token, expires_at, user }
+  required: false,        // whether this page is gated at all
+  syncing: false,
+  lastPush: 0
+};
+
+function authRequired() {
+  return location.hostname === AUTH.host;
+}
+
+function authUser() {
+  return Auth.session && Auth.session.user ? Auth.session.user : null;
+}
+
+function authEmail() {
+  var u = authUser();
+  return u ? (u.email || '') : '';
+}
+
+/* ------------------------------------------------------------- transport */
+
+function authFetch(path, opts) {
+  opts = opts || {};
+  var h = opts.headers || {};
+  h.apikey = AUTH.key;
+  h['Content-Type'] = 'application/json';
+  if (opts.auth !== false && Auth.session && Auth.session.access_token) {
+    h.Authorization = 'Bearer ' + Auth.session.access_token;
+  }
+  return fetch(AUTH.url + path, {
+    method: opts.method || 'GET',
+    headers: h,
+    body: opts.body ? JSON.stringify(opts.body) : undefined
+  });
+}
+
+function authStore(session) {
+  Auth.session = session;
+  try {
+    if (session) localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(session));
+    else localStorage.removeItem(AUTH_SESSION_KEY);
+  } catch (e) {}
+}
+
+function authLoadSession() {
+  try {
+    var raw = localStorage.getItem(AUTH_SESSION_KEY);
+    if (!raw) return null;
+    var s = JSON.parse(raw);
+    return (s && s.access_token) ? s : null;
+  } catch (e) { return null; }
+}
+
+function authSignIn(email, password) {
+  return authFetch('/auth/v1/token?grant_type=password',
+                   { method: 'POST', auth: false, body: { email: email, password: password } })
+    .then(function (r) {
+      return r.json().then(function (j) {
+        if (!r.ok) {
+          /* Supabase's own wording is for developers. These two are the only
+             ones a student will ever see, so they say what to do about it. */
+          var msg = (j && (j.error_description || j.msg || j.error)) || 'Sign-in failed.';
+          if (/invalid login/i.test(msg)) {
+            msg = 'That email and password do not match an account.';
+          } else if (/email not confirmed/i.test(msg)) {
+            msg = 'This account has not been confirmed yet — ask for it to be ' +
+                  'confirmed in the dashboard.';
+          }
+          throw new Error(msg);
+        }
+        j.expires_at = Date.now() + (j.expires_in || 3600) * 1000;
+        authStore(j);
+        return j;
+      });
+    });
+}
+
+/* An access token lasts an hour; the refresh token is what keeps somebody
+   signed in for weeks, which is what "it remembers me" actually means. */
+function authRefresh() {
+  if (!Auth.session || !Auth.session.refresh_token) return Promise.resolve(null);
+  return authFetch('/auth/v1/token?grant_type=refresh_token',
+                   { method: 'POST', auth: false,
+                     body: { refresh_token: Auth.session.refresh_token } })
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (j) {
+      if (!j || !j.access_token) { authStore(null); return null; }
+      j.expires_at = Date.now() + (j.expires_in || 3600) * 1000;
+      authStore(j);
+      return j;
+    })
+    .catch(function () { return null; });
+}
+
+function authFresh() {
+  if (!Auth.session) return Promise.resolve(null);
+  /* Refresh a minute early rather than discovering it expired mid-request. */
+  if (Auth.session.expires_at && Auth.session.expires_at - Date.now() > 60000) {
+    return Promise.resolve(Auth.session);
+  }
+  return authRefresh();
+}
+
+function authSignOut() {
+  authFetch('/auth/v1/logout', { method: 'POST' }).catch(function () {});
+  authStore(null);
+  location.reload();
+}
+
+/* ------------------------------------------------------------------ sync */
+
+/* Pull the account's save and fold it into this device's.
+
+   mergeStores already knows how to do this properly - a level takes the
+   higher of the two, a count adds, a personal best takes the maximum, and a
+   training record keeps whichever has actually been practised more. So
+   working offline on a laptop and then signing in on a phone adds up rather
+   than overwriting, in whichever order it happens. */
+function authPull() {
+  var u = authUser();
+  if (!u) return Promise.resolve(false);
+  return authFresh().then(function () {
+    return authFetch('/rest/v1/progress?select=store&user_id=eq.' + u.id);
+  }).then(function (r) {
+    if (!r.ok) return false;
+    return r.json().then(function (rows) {
+      if (!rows || !rows.length || !rows[0].store) return false;
+      var remote = rows[0].store;
+      if (!remote || typeof remote !== 'object') return false;
+      mergeStores(STORE, remote);
+      saveStore(STORE);
+      return true;
+    });
+  }).catch(function () { return false; });
+}
+
+/* Push this device's save up. Upsert, because the row may not exist yet. */
+function authPush() {
+  var u = authUser();
+  if (!u || Auth.syncing) return Promise.resolve(false);
+  Auth.syncing = true;
+  return authFresh().then(function () {
+    return authFetch('/rest/v1/progress', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+      body: [{ user_id: u.id, store: STORE }]
+    });
+  }).then(function (r) {
+    Auth.syncing = false;
+    Auth.lastPush = Date.now();
+    return !!(r && r.ok);
+  }).catch(function () { Auth.syncing = false; return false; });
+}
+
+/* Saving happens on every answered question, so pushing on every save would
+   be a request a second. Coalesce them. */
+var _authPushTimer = null;
+function authPushSoon() {
+  if (!authUser()) return;
+  if (_authPushTimer) clearTimeout(_authPushTimer);
+  _authPushTimer = setTimeout(function () { _authPushTimer = null; authPush(); }, 4000);
+}
+
+/* And once more on the way out, so the last answer of a session is not the
+   one that gets lost. */
+function authBindUnload() {
+  window.addEventListener('pagehide', function () {
+    var u = authUser();
+    if (!u || !navigator.sendBeacon) return;
+    /* sendBeacon cannot set headers, so the token rides in the query string of
+       a dedicated endpoint... which PostgREST does not allow. Fall back to a
+       synchronous best effort: if it does not land, the next sign-in merges
+       anyway and nothing is lost for good. */
+    authPush();
+  });
+}
+
+/* ------------------------------------------------------------------- gate */
+
+function authScreenHTML(message) {
+  return '' +
+    '<div id="authGate" style="position:fixed;inset:0;z-index:9999;display:flex;' +
+    'align-items:center;justify-content:center;background:#05060a;' +
+    'font:15px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif;color:#c8cfdd">' +
+    '<form id="authForm" style="width:min(92vw,340px);display:flex;flex-direction:column;gap:10px">' +
+    '<div style="font:600 22px/1.2 ui-sans-serif,system-ui,sans-serif;color:#e9edf7">' +
+    'Stellar Guesser <span style="color:#ffc14d">Plus</span></div>' +
+    '<div style="color:#8b95a8;font-size:13px;margin-bottom:2px">' +
+    'Sign in with the account you were given.</div>' +
+    '<input id="authEmail" type="email" autocomplete="username" placeholder="email" ' +
+    'style="padding:10px 12px;border-radius:8px;border:1px solid #2b3346;background:#0c1018;' +
+    'color:#e9edf7;font-size:15px">' +
+    '<input id="authPass" type="password" autocomplete="current-password" placeholder="password" ' +
+    'style="padding:10px 12px;border-radius:8px;border:1px solid #2b3346;background:#0c1018;' +
+    'color:#e9edf7;font-size:15px">' +
+    '<button id="authGo" type="submit" style="padding:10px 12px;border-radius:8px;border:0;' +
+    'background:#ffc14d;color:#1a1206;font-weight:600;font-size:15px;cursor:pointer">Sign in</button>' +
+    '<div id="authMsg" style="min-height:19px;font-size:13px;color:#ff9a8a">' +
+    (message ? esc(message) : '') + '</div>' +
+    '<div style="color:#5d6879;font-size:12px;line-height:1.45">' +
+    'Accounts are made by hand. If you do not have one, ask — you cannot create ' +
+    'one here.</div>' +
+    '</form></div>';
+}
+
+/* Resolves once there is a session, or never, because there is nothing to
+   show until there is one. */
+function authGate() {
+  return new Promise(function (resolve) {
+    var wrap = document.createElement('div');
+    wrap.innerHTML = authScreenHTML('');
+    document.body.appendChild(wrap.firstChild);
+
+    var form = el('authForm'), msg = el('authMsg'), go = el('authGo');
+    el('authEmail').focus();
+
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var email = (el('authEmail').value || '').trim();
+      var pass = el('authPass').value || '';
+      if (!email || !pass) { msg.textContent = 'Both fields, please.'; return; }
+      go.disabled = true; go.textContent = 'Signing in…';
+      msg.textContent = '';
+      authSignIn(email, pass).then(function () {
+        var gate = el('authGate');
+        if (gate) gate.remove();
+        resolve();
+      }).catch(function (err) {
+        go.disabled = false; go.textContent = 'Sign in';
+        msg.textContent = err && err.message ? err.message : 'Sign-in failed.';
+      });
+    });
+  });
+}
+
+/* Called by the boot sequence. Resolves when the app may start. */
+function authStart() {
+  Auth.required = authRequired();
+  if (!Auth.required) return Promise.resolve();
+
+  Auth.session = authLoadSession();
+  if (!Auth.session) return authGate().then(authPull);
+
+  /* A stored session still has to be proved good, or a revoked account would
+     keep working offline forever. */
+  return authRefresh().then(function (s) {
+    if (s) return authPull();
+    return authGate().then(authPull);
+  });
 }
 
 /* ---- js/10-match.js ---- */
@@ -1490,7 +1787,9 @@ function starRadius(mag, lim, zoomK) {
   var d = lim - mag;
   if (d <= 0) return 0;
   var g = OPT.starGrowth == null ? 1 : OPT.starGrowth;
-  return (0.28 + STAR_GROWTH_BASE * g * Math.pow(d, 1.05)) *
+  /* The old discs were slightly oversized across every mode. Keep the same
+     magnitude curve and zoom behaviour, but reduce the final radius by 5%. */
+  return 0.95 * (0.28 + STAR_GROWTH_BASE * g * Math.pow(d, 1.05)) *
          zoomK * (OPT.starScale || 1);
 }
 function zoomK() { return clamp(Math.pow(55 / Sky.fov, 0.20), 0.85, 2.1); }
@@ -1550,6 +1849,9 @@ function layerKey() {
 
 function drawLayers() {
   var ctx = Sky.ctx, o = OPT;
+  /* The olympiad preset is genuinely monochrome, including grids, figures,
+     labels and deep-sky symbols rather than only changing the star dots. */
+  ctx.filter = o.printChart ? 'grayscale(1)' : 'none';
   ctx.clearRect(0, 0, Sky.w, Sky.h);
   ctx.fillStyle = o.printChart ? PRINT_PAPER : '#05060a';
   ctx.fillRect(0, 0, Sky.w, Sky.h);
@@ -1865,43 +2167,16 @@ var BV_PALETTE = (function () {
 })();
 /* ------------------------------------------------------------------ paper
 
-   Every blind-map plate in the archive is the same object: white ground, a
-   thin magenta horizon circle, star dots sized by magnitude and faintly
-   tinted by colour index, and nothing else - no grid, no figures, no labels,
-   no cardinal marks. Drawing a dark sky is right for a dome and for an
-   eyepiece and wrong for this round, because on paper the size of a dot is
-   the only brightness cue there is, and a white dot on black does not read
-   like a black dot on white at the same radius.
-
-   So the palette flips rather than inverts. Inverting the colours would turn
-   a warm star cyan; instead the twelve B-V buckets are re-laid between the
-   two inks a printer actually uses on these plates - a cool blue and a warm
-   brown - through a near-black neutral in the middle. Faintness still comes
-   from alpha, which on white paper lightens a dot exactly as it dimmed one on
-   black, so the magnitude ladder needs no change at all. */
+   The optional olympiad plate is plain white paper and neutral black ink.
+   Brightness is encoded by dot size and opacity, never by star colour. */
 var PRINT_PAPER = '#FBF9F7';
-var PRINT_COOL = [0x3F, 0x6B, 0xB0];
-var PRINT_NEUTRAL = [0x2A, 0x25, 0x30];
-var PRINT_WARM = [0xA9, 0x70, 0x2F];
-/* How far the two inks are allowed from neutral. The plates are described as
-   faintly tinted and they mean faintly: most naked-eye stars sit at B-V 0.0
-   to 0.6, which is the cool half of the range, so an undamped ramp turns two
-   thirds of the chart blue. At 0.45 the hue is still there to be seen against
-   a neighbour and no longer reads as a colour chart. */
-var PRINT_TINT = 0.45;
+var PRINT_INK = [0x18, 0x18, 0x18];
 var PRINT_PALETTE = (function () {
-  var out = [], i, j, t, a, b;
-  for (i = 0; i < 12; i++) {
-    t = i / 11;
-    if (t < 0.5) { a = PRINT_COOL; b = PRINT_NEUTRAL; t = t * 2; }
-    else { a = PRINT_NEUTRAL; b = PRINT_WARM; t = (t - 0.5) * 2; }
-    var c = [];
-    for (j = 0; j < 3; j++) {
-      var v = a[j] + (b[j] - a[j]) * t;
-      c.push(Math.round(PRINT_NEUTRAL[j] + (v - PRINT_NEUTRAL[j]) * PRINT_TINT));
-    }
-    out.push(c);
-  }
+  /* Olympiad charts encode brightness by dot size, not hue. Every B-V bucket
+     therefore uses the same neutral ink; alpha still distinguishes stars at
+     the limiting magnitude without introducing blue or brown dots. */
+  var out = [];
+  for (var i = 0; i < 12; i++) out.push(PRINT_INK);
   return out;
 })();
 
@@ -3502,15 +3777,24 @@ var Tools = {
    leaves the other. The controls list in that mode has always said T, R and C
    worked there; they did not, because this object did not mention it. */
 var TOOLS_MODES = { mock: 1, exam: 1, skymap: 1, scope: 1, ioaa: 1, ioaa2025: 1 };
+/* Learn benefits from turning the chart while memorising patterns, but it is
+   not an exam desk and should not gain the ruler, compass or stopwatch. */
+var ROTATE_MODES = { learn: 1, mock: 1, exam: 1, skymap: 1, scope: 1,
+                     ioaa: 1, ioaa2025: 1 };
 function toolsAllowedHere(name) {
   return !!TOOLS_MODES[name === undefined ? Modes.currentName : name];
 }
+function toolsRotateAllowedHere(name) {
+  return !!ROTATE_MODES[name === undefined ? Modes.currentName : name];
+}
 function toolsSyncForMode(name) {
-  var show = toolsAllowedHere(name);
-  ['btnTimer', 'btnRuler', 'btnCompass', 'btnPoint', 'btnRotate'].forEach(function (id) {
+  var show = toolsAllowedHere(name), showRotate = toolsRotateAllowedHere(name);
+  ['btnTimer', 'btnRuler', 'btnCompass', 'btnPoint'].forEach(function (id) {
     var b = el(id);
     if (b) b.classList.toggle('hidden', !show);
   });
+  var rotateButton = el('btnRotate');
+  if (rotateButton) rotateButton.classList.toggle('hidden', !showRotate);
   if (!show) {
     Tools.timer.on = false;
     Tools.ruler.on = false; Tools.ruler.pts = [];
@@ -3525,6 +3809,7 @@ function toolsSyncForMode(name) {
        clean, because Mock.begin clears it. */
     Sky.needsDraw = true;
   }
+  if (!showRotate) Tools.rotateOpen = false;
   toolsRender();
 }
 
@@ -4521,9 +4806,23 @@ function frameOn(ra, dec, fov, jitter) {
    ========================================================================== */
 var DsoQuiz = { scope: 'm-all', cur: -1, answered: false, started: false };
 
+/* The 50-object second curriculum keeps both existing priority tiers, then
+   adds the 12 brightest remaining Messier objects. It is explicit rather than
+   recalculated at runtime so a catalogue-data update cannot silently change a
+   learner's set or invalidate their saved progress. */
+var MESSIER_IMPORTANT_2 = (function () {
+  var nums = [1,3,4,5,6,7,8,11,13,15,16,17,18,20,22,24,27,31,32,33,34,35,37,
+              39,40,41,42,43,44,45,46,47,48,51,57,63,64,67,74,76,78,81,82,83,
+              93,94,97,101,102,104];
+  var set = {};
+  nums.forEach(function (n) { set[n] = 1; });
+  return set;
+})();
+
 var DSO_SCOPES = [
   ['m-most', 'Messier · most important', function (d) { return d.tier === 1; }],
   ['m-imp', 'Messier · important', function (d) { return d.tier === 1 || d.tier === 2; }],
+  ['m-imp2', 'Messier · important 2 · 50', function (d) { return !!MESSIER_IMPORTANT_2[d.m]; }],
   ['m-all', 'Messier · all 110', function (d) { return !!d.m; }],
   ['other', 'Other objects', function (d) { return !d.m; }],
   ['c-all', 'Caldwell · all', function (d) { return !!d.c; }],
@@ -4532,7 +4831,7 @@ var DSO_SCOPES = [
 ];
 /* Caldwell and the southern set stay available to Learn, but the quiz chips collapse
    everything non-Messier into one bucket. */
-var QUIZ_SCOPES = ['m-most', 'm-imp', 'm-all', 'other', 'all'];
+var QUIZ_SCOPES = ['m-most', 'm-imp', 'm-imp2', 'm-all', 'other', 'all'];
 var SOUTH_SET = { 'C106': 1, 'C80': 1, 'C92': 1, 'C93': 1, 'C94': 1, 'LMC': 1, 'SMC': 1 };
 
 function scopeFilter(id) {
@@ -4783,6 +5082,7 @@ function bindLearnTopic() {
 var LEARN_SETS = [
   ['m-most', 'Messier · most important'],
   ['m-imp', 'Messier · important'],
+  ['m-imp2', 'Messier · important 2 · 50'],
   ['m-all', 'Messier · all 110'],
   ['south', 'Southern essentials'],
   ['c-all', 'Caldwell · all']
@@ -11925,7 +12225,7 @@ function mockHorizonOverlay() {
   }
   /* Built at task setup, outside the OPT swap drawSky does, so it has to ask
      for the merged value itself - raw OPT here is only what you chose. */
-  return [{ t: 'polyline', colour: optMerged().printChart ? '#B8317F' : '#4e9b68',
+  return [{ t: 'polyline', colour: optMerged().printChart ? '#181818' : '#4e9b68',
             width: 2, closed: true, pts: pts }];
 }
 
@@ -12181,9 +12481,9 @@ Modes.defs.mock = {
       Modes.override.printChart = false;
       updateBasis();
     } else {
-      /* Sky Chart is an on-screen sky, not print preview. Dark rendering is a
-         requirement here, so an old persisted setting cannot turn it white. */
-      Modes.override.printChart = false;
+      /* Both the standalone Sky chart and Mock -> Sky chart reproduce the
+         olympiad sheet: white paper, neutral black ink, no coloured stars. */
+      Modes.override.printChart = true;
       mockPinChart();
     }
     Sky.overlays = mockHorizonOverlay();
@@ -13607,6 +13907,12 @@ function scopeMoonNow() {
 
 var SCOPE_PLANET_LIST = ['mercury', 'venus', 'mars', 'jupiter', 'saturn', 'uranus', 'neptune'];
 
+/* Do not paste survey rectangles into the eyepiece. The local plates are good
+   reference photographs for object cards, but an eyepiece view should be a
+   continuous rendered sky. This also removes any possibility that a stale or
+   wrongly served image URL paints unrelated web content over the telescope. */
+var SCOPE_USE_MESSIER_PLATES = false;
+
 function scopeMessierPool() {
   var out = [];
   for (var i = 0; i < DSOS.length; i++) if (DSOS[i].m) out.push(i);
@@ -13894,7 +14200,7 @@ function scopeDrawExtra() {
       /* Which of the object's frames to lay on the sky depends on how far
          in you are: the wide one while it is a smudge in a big field, the
          close one once the view is down around the object itself. */
-      var fr = messierFrameFor(d.m, Sky.fov);
+      var fr = SCOPE_USE_MESSIER_PLATES ? messierFrameFor(d.m, Sky.fov) : null;
       if (!fr || !scopeDrawDeepSky(d, fr.src, op, fr.field)) scopeDrawSmudge(d, op);
     }
     /* The rest of the catalogue has no plate at all, so it is all smudge - but
@@ -14179,23 +14485,30 @@ function scopeTargetPos(t) {
 }
 
 function scopeNewFindTask() {
+  /* Deal only targets that can actually be observed now. The free "Point at"
+     picker already used this list, but the exercise generator used the whole
+     catalogue and could ask for an object below the ground. Keep a little
+     altitude margin as well: an object grazing the horizon is not a useful
+     150 mm target even if refraction technically puts it above zero. */
+  var visible = scopeVisibleTargets();
+  if (!visible.length) return null;
   var roll = Math.random();
-  var t;
-  if (roll < 0.55) {
-    var pool = scopeMessierPool();
-    t = { kind: 'dso', idx: pool[Math.floor(Math.random() * pool.length)] };
-  } else if (roll < 0.8) {
-    t = { kind: 'planet', name: SCOPE_PLANET_LIST[Math.floor(Math.random() * SCOPE_PLANET_LIST.length)] };
-  } else if (roll < 0.9) {
-    t = { kind: 'sun' };
-  } else {
-    t = { kind: 'moon' };
-  }
+  var kind = roll < 0.55 ? 'dso' : roll < 0.8 ? 'planet' : roll < 0.9 ? 'sun' : 'moon';
+  var choices = visible.filter(function (x) { return x.t.kind === kind; });
+  if (!choices.length) choices = visible;
+  var t = choices[Math.floor(Math.random() * choices.length)].t;
   return { kind: 'find', target: t, checked: false };
 }
 
 function scopeNewDriftTask() {
-  var pool = ptBrightNamed(3.0).filter(function (i) { return Math.abs(STARS[i][1]) < 70; });
+  var L = scopeLst();
+  var pool = ptBrightNamed(3.0).filter(function (i) {
+    return Math.abs(STARS[i][1]) < 70 &&
+           ptRaDecToAltAz(STARS[i][0], STARS[i][1], Scope.lat, L).alt > 15;
+  });
+  /* There is always a bright star somewhere above 15 degrees, but retain a
+     safe fallback for a damaged or unusually small catalogue. */
+  if (!pool.length) return null;
   var s = pool[Math.floor(Math.random() * pool.length)];
   Scope.dec = STARS[s][1];
   Scope.ra = STARS[s][0];
@@ -21158,6 +21471,11 @@ window.SGP = {
       switchUI(UI_MODE === 'mobile' ? 'desktop' : 'mobile');
     });
   }
-  if (UI_MODE === 'mobile') bootMobile(); else bootDesktop();
+  /* Nothing renders until there is an account, on the live host. Off it,
+     authStart resolves immediately and the app behaves as it always did. */
+  authStart().then(function () {
+    if (UI_MODE === 'mobile') bootMobile(); else bootDesktop();
+    authBindUnload();
+  });
 })();
 </script>
