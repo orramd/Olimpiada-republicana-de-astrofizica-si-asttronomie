@@ -3866,7 +3866,13 @@ var Tools = {
      the flexible one is how a right ascension gets read off along the equator -
      but the straight edge is the one you reach for first and the one every
      "join these two stars" task wants, so it is the default. */
-  ruler: { on: false, pts: [], arc: false },
+  /* span: 'segment' stops at the two points you clicked; 'line' carries on
+     past them - the straight edge laid across the whole sheet, or the whole
+     great circle. Both are things you do with a ruler on a chart: measure a
+     separation, or produce a line to see what else it passes through. The
+     measurement is the same either way - it is the distance between the two
+     points, not the length of what is drawn. */
+  ruler: { on: false, pts: [], arc: false, span: 'segment' },
   /* Compasses. A pair of compasses is a flat instrument: you put the point
      down on the paper, open the legs, and swing a circle. It draws a circle on
      the sheet.
@@ -4036,8 +4042,17 @@ function toolsRulerKeep() {
   if (p.length < 2) return false;
   var m = toolsRulerMeasure();
   var label = m ? m.cm.toFixed(2) + ' cm · ' + fmtDeg(m.deg) : '';
+  var line = Tools.ruler.span === 'line';
   if (Tools.ruler.arc) {
-    inkPolyline(toolsArcPath(p[0], p[1]), label, 'tool');
+    inkPolyline(line ? toolsGreatCirclePath(p[0], p[1])
+                     : toolsArcPath(p[0], p[1]), label, 'tool');
+  } else if (line) {
+    /* Keep it as the sky positions of the produced ends, so the traced line
+       stays put when the chart is turned or zoomed. */
+    var e = toolsExtendToEdge(p[0], p[1]);
+    var ra1 = unproject(e[0].x, e[0].y), ra2 = unproject(e[1].x, e[1].y);
+    if (ra1 && ra2) inkLine(ra1, ra2, true, label, 'tool');
+    else inkLine([p[0].ra, p[0].dec], [p[1].ra, p[1].dec], true, label, 'tool');
   } else {
     inkLine([p[0].ra, p[0].dec], [p[1].ra, p[1].dec], true, label, 'tool');
   }
@@ -4185,6 +4200,27 @@ function toolsArcPath(a, b) {
   return out;
 }
 
+/* The whole great circle through two points, not just the arc between them.
+   Built from an orthonormal pair - the first point, and the part of the second
+   that is perpendicular to it - so every point of the circle is one cosine and
+   one sine away and the curve closes exactly. */
+function toolsGreatCirclePath(a, b) {
+  var u = toVec(a.ra, a.dec), v = toVec(b.ra, b.dec);
+  var dot = u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+  var w = [v[0] - dot * u[0], v[1] - dot * u[1], v[2] - dot * u[2]];
+  var n = Math.hypot(w[0], w[1], w[2]);
+  if (!(n > 1e-9)) return toolsArcPath(a, b);       // the same point twice
+  w = [w[0] / n, w[1] / n, w[2] / n];
+  var out = [], steps = 240, i;
+  for (i = 0; i <= steps; i++) {
+    var th = i / steps * TAU, c = Math.cos(th), sn = Math.sin(th);
+    out.push(fromVec([u[0] * c + w[0] * sn,
+                      u[1] * c + w[1] * sn,
+                      u[2] * c + w[2] * sn]));
+  }
+  return out;
+}
+
 function toolsRulerMeasure() {
   var p = Tools.ruler.pts;
   if (p.length < 2) return null;
@@ -4205,16 +4241,36 @@ function toolsRulerMeasure() {
 }
 
 /* --------------------------------------------------------------- drawing */
+/* A label on the chart is an annotation, not a sign. The first version drew a
+   filled plate 18 px tall behind every one of them, which on a chart is a
+   rectangle of stars you can no longer see - and the label sat over the very
+   mark it was naming. Small text with a thin halo reads just as well on both
+   the white chart and the dark sky, and hides almost nothing. */
 function toolsLabelAt(ctx, text, x, y, colour) {
   if (!text) return;
-  ctx.font = '600 12px ui-monospace, Consolas, monospace';
-  var w = ctx.measureText(text).width;
-  ctx.fillStyle = 'rgba(6,9,16,0.85)';
-  ctx.fillRect(x - w / 2 - 6, y - 9, w + 12, 18);
-  ctx.fillStyle = colour || '#ffd479';
+  ctx.save();
+  ctx.font = '600 10px ui-monospace, Consolas, monospace';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
+  ctx.lineWidth = 2.5;
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = optMerged().printChart ? 'rgba(255,255,255,0.9)'
+                                           : 'rgba(6,9,16,0.9)';
+  ctx.strokeText(text, x, y);
+  ctx.fillStyle = colour || '#ffd479';
   ctx.fillText(text, x, y);
+  ctx.restore();
+}
+
+/* Produce a segment past both ends until it leaves the canvas. Screen space,
+   because a straight edge on the sheet is straight on the sheet. */
+function toolsExtendToEdge(a, b) {
+  var dx = b.x - a.x, dy = b.y - a.y;
+  var len = Math.hypot(dx, dy);
+  if (!(len > 0.001)) return [a, b];
+  var c = Sky.ctx.canvas, reach = (c.width + c.height) / len;
+  return [{ x: a.x - dx * reach, y: a.y - dy * reach },
+          { x: b.x + dx * reach, y: b.y + dy * reach }];
 }
 
 /* A circle drawn on the sheet: centred on the projected centre, with a radius
@@ -4319,7 +4375,9 @@ function drawToolsOverlay() {
     ctx.strokeStyle = '#ffd479';
     ctx.lineWidth = 1.6;
     if (Tools.ruler.arc) {
-      var path = toolsArcPath(p[0], p[1]), started = false, i;
+      var path = Tools.ruler.span === 'line'
+        ? toolsGreatCirclePath(p[0], p[1]) : toolsArcPath(p[0], p[1]);
+      var started = false, i;
       ctx.beginPath();
       for (i = 0; i < path.length; i++) {
         var q = projRaDec(path[i][0], path[i][1]);
@@ -4328,9 +4386,11 @@ function drawToolsOverlay() {
       }
       ctx.stroke();
     } else {
+      var ends = Tools.ruler.span === 'line'
+        ? toolsExtendToEdge(p[0], p[1]) : [p[0], p[1]];
       ctx.beginPath();
-      ctx.moveTo(p[0].x, p[0].y);
-      ctx.lineTo(p[1].x, p[1].y);
+      ctx.moveTo(ends[0].x, ends[0].y);
+      ctx.lineTo(ends[1].x, ends[1].y);
       ctx.stroke();
     }
     var m = toolsRulerMeasure();
@@ -4379,6 +4439,8 @@ function toolsRender() {
   if (r.on) {
     bits.push('<div class="tool"><span class="lab">Ruler</span>' +
       '<button class="btn sm" id="ruMode">' + (r.arc ? 'arc' : 'straight') + '</button>' +
+      '<button class="btn sm" id="ruSpan" title="Stop at the two points, or ' +
+      'carry the line on past them">' + r.span + '</button>' +
       '<b>' + (m ? m.cm.toFixed(2) + ' cm · ' + fmtDeg(m.deg) : 'two points') + '</b>' +
       '<button class="btn sm" id="ruKeep" title="Leave the line on the chart">Trace</button>' +
       '<button class="btn sm" id="ruClr">Clear</button>' +
@@ -4449,6 +4511,11 @@ function toolsRender() {
   if (r.on) {
     el('ruMode').addEventListener('click', function () {
       Tools.ruler.arc = !Tools.ruler.arc;
+      Sky.needsDraw = true;
+      toolsRender();
+    });
+    el('ruSpan').addEventListener('click', function () {
+      Tools.ruler.span = Tools.ruler.span === 'line' ? 'segment' : 'line';
       Sky.needsDraw = true;
       toolsRender();
     });
@@ -12067,6 +12134,14 @@ var Mock = {
   round: null,
   idx: 0,
   picks: [],
+  /* Which listed target the next click is for. A mark on its own says "one of
+     these three is here", which is not what the paper asks: it asks you to say
+     which star is which, and a mark you cannot name is not an answer. So the
+     list is clickable, the click that follows belongs to whatever is selected,
+     and the check honours that instead of quietly assigning your marks to
+     whichever target happens to be nearest. -1 means nothing is selected and
+     the old nearest-unique matching still applies. */
+  forIdx: -1,
   answered: false,
   results: [],
   site: null,
@@ -12491,7 +12566,66 @@ function mockCircleFor(which) {
    the zenith is still there when you come to draw the meridian through it, and
    half the skill of an observational round is building the chart up like that.
    Your own marks go on in pencil, the revealed truth in green. */
+
 var MOCK_TRUTH = '#56d98a';
+
+/* ------------------------------------------------ naming what you mark
+
+   Say which is which. The paper asks you to mark Elnath, Alkaid and Deneb -
+   three separate answers - and three unnamed dots is not that: it is "one of
+   these is here somewhere". So the list is the tool. Click a name, click the
+   chart, and that mark is that star; the next name selects itself so the
+   whole task is name-click-name-click without going back to the list. */
+
+function mockShortName(name) {
+  var n = String(name || '');
+  /* "Elnath · beta Tau" is longer than the space beside a dot on a chart. */
+  return n.split('·')[0].trim().slice(0, 12);
+}
+
+function mockPickFor(oi) {
+  for (var i = 0; i < Mock.picks.length; i++) {
+    if (Mock.picks[i][2] === oi) return Mock.picks[i];
+  }
+  return null;
+}
+
+function mockSelectNextUnmarked(t) {
+  if (!t || !t.of) { Mock.forIdx = -1; return; }
+  for (var i = 0; i < t.of.length; i++) {
+    if (!mockPickFor(i)) { Mock.forIdx = i; return; }
+  }
+  Mock.forIdx = -1;                     // all named: further clicks are spare
+}
+
+function mockListRows(t) {
+  return (t.of || []).map(function (o, oi) {
+    var placed = !!mockPickFor(oi), sel = Mock.forIdx === oi;
+    return '<div class="it' + (sel ? ' sel' : '') + '" data-oi="' + oi + '"' +
+      ' style="cursor:pointer' +
+      (sel ? ';outline:1px solid #ffc14d;border-radius:6px' : '') + '">' +
+      '<span class="nm">' + esc(o.name || o) + '</span>' +
+      '<span class="note" style="margin-left:auto">' +
+      (placed ? 'marked' : sel ? 'click the chart' : '') + '</span></div>';
+  }).join('');
+}
+
+function mockPaintList(ui) {
+  var box = el('mkList');
+  if (!box) return;
+  var t = mockTask();
+  if (!t || !t.of) return;
+  box.innerHTML = mockListRows(t);
+  qsAll('mkList', '.it').forEach(function (node) {
+    node.addEventListener('click', function () {
+      var oi = parseInt(node.getAttribute('data-oi'), 10);
+      Mock.forIdx = (Mock.forIdx === oi) ? -1 : oi;
+      mockPaintList(ui);
+      if (ui) ui.paint();
+    });
+  });
+}
+
 function mockInkTask(t) {
   var C = { lat: Mock.round.lat, lst: Mock.round.lst };
 
@@ -12589,6 +12723,9 @@ Modes.defs.mock = {
     var self = this;
     if (Mock.kind && Mock.round) { this.renderTask(); return; }
 
+    /* No paper in hand and none to resume, so nothing drawn on one should
+       still be on screen. */
+    Tools.ink.length = 0;
     Modes.override = null;
     Sky.overlays = [];
     Sky.locked = false;
@@ -12662,7 +12799,7 @@ Modes.defs.mock = {
     Mock.owner = Modes.currentName;
     Mock.idx = 0;
     Mock.results = [];
-    Mock.picks = [];
+    Mock.picks = []; Mock.forIdx = -1;
     Mock.answered = false;
     Tools.ink.length = 0;          // a fresh paper comes with a clean sheet
     Mock.viewAlt = 35; Mock.viewAz = 180;
@@ -12687,7 +12824,7 @@ Modes.defs.mock = {
     Modes.applyChrome('mock');
     toolsSyncForMode('mock');
 
-    Mock.picks = [];
+    Mock.picks = []; Mock.forIdx = -1;
     Mock.answered = false;
     Mock.sel = -1;
     Mock.traced = [];
@@ -12861,15 +12998,17 @@ Modes.defs.mock = {
           'sky’s coordinates either way.</div>'
         : '') +
       '<div class="q">' + esc(t.text) + '</div>' +
-      (t.of ? '<div class="list">' + t.of.map(function (o) {
-        return '<div class="it"><span class="nm">' + esc(o.name || o) + '</span></div>';
-      }).join('') + '</div>' : '') +
+      (t.of ? '<div class="list" id="mkList">' + mockListRows(t) + '</div>' : '') +
       controls +
       '<div class="btnrow"><button class="btn sm primary" id="mkCheck">Check</button>' +
       '<button class="btn sm" id="mkSkip">Skip</button>' +
       '<button class="btn sm" id="mkStop">End</button></div>' +
       '<div id="mkOut"></div>');
 
+    if (t.of && t.of.length) {
+      if (Mock.forIdx < 0 && !Mock.picks.length) Mock.forIdx = 0;
+      mockPaintList(self);
+    }
     el('mkCheck').addEventListener('click', function () { self.check(); });
     el('mkSkip').addEventListener('click', function () { self.skip(); });
     el('mkStop').addEventListener('click', function () { self.finish(); });
@@ -12893,7 +13032,10 @@ Modes.defs.mock = {
     }
     if (el('mkUndo')) {
       el('mkUndo').addEventListener('click', function () {
-        Mock.picks.pop(); self.paint();
+        var gone = Mock.picks.pop();
+        if (gone && gone[2] >= 0) Mock.forIdx = gone[2];   // hand the name back
+        self.paint();
+        mockPaintList(self);
       });
     }
     if (el('mkAddCon')) {
@@ -12915,6 +13057,12 @@ Modes.defs.mock = {
     var t = mockTask(), extra = [];
     Mock.picks.forEach(function (p, i) {
       extra.push({ t: 'circle', ra: p[0], dec: p[1], rad: 2.5, colour: '#ffc14d' });
+      /* A named mark says its name on the chart, so you can see at a glance
+         that the one you called Deneb is where you meant it to be. */
+      if (t && t.of && p[2] >= 0 && t.of[p[2]]) {
+        extra.push({ t: 'pin', ra: p[0], dec: p[1], colour: '#ffc14d',
+                     label: mockShortName(t.of[p[2]].name || t.of[p[2]]) });
+      }
       if (t && (t.k === 'cardinal' || t.k === 'brightest')) {
         extra.push({ t: 'pin', ra: p[0], dec: p[1], colour: '#ffc14d',
                      label: t.k === 'cardinal' ? ['N', 'E', 'S', 'W'][i] || '?'
@@ -12953,8 +13101,17 @@ Modes.defs.mock = {
       this.paint();
       return true;
     }
-    Mock.picks.push([rd[0], rd[1]]);
+    var oi = (t.of && t.of.length && Mock.forIdx >= 0) ? Mock.forIdx : -1;
+    if (oi >= 0) {
+      /* Clicking again for the same target moves that mark rather than adding
+         a second one - on paper you would rub it out and put it where you
+         meant it. */
+      Mock.picks = Mock.picks.filter(function (p) { return p[2] !== oi; });
+    }
+    Mock.picks.push([rd[0], rd[1], oi]);
+    if (oi >= 0) mockSelectNextUnmarked(t);
     this.paint();
+    mockPaintList(this);
     return true;
   },
 
@@ -13110,8 +13267,20 @@ Modes.defs.mock = {
 
     } else if (t.k === 'mark-list') {
       want = t.of.length;
-      var used = [];
+      var used = [], named = 0;
+      /* A mark that says which star it is answers for that star and no other.
+         Marking Deneb's place and calling it Alkaid is a wrong answer, not a
+         right one that happened to land near something else - so a named mark
+         is measured against the name it carries. Unnamed marks (nothing was
+         selected) fall back to the old nearest-unique matching. */
       Mock.picks.forEach(function (p) {
+        if (p[2] == null || p[2] < 0 || used.indexOf(p[2]) >= 0) return;
+        named++;
+        used.push(p[2]);
+        if (sepDeg(p[0], p[1], t.of[p[2]].ra, t.of[p[2]].dec) < 4) got++;
+      });
+      Mock.picks.forEach(function (p) {
+        if (p[2] != null && p[2] >= 0) return;
         var best = -1, bd = 4;
         t.of.forEach(function (o, oi) {
           if (used.indexOf(oi) >= 0) return;
@@ -13120,7 +13289,8 @@ Modes.defs.mock = {
         });
         if (best >= 0) { used.push(best); got++; }
       });
-      detail = 'Within 4° counts.';
+      detail = 'Within 4° counts.' +
+        (named ? ' Marks you named were checked against that name.' : '');
       Sky.overlays = mockHorizonOverlay().concat(t.of.map(function (o, oi) {
         return { t: 'pin', ra: o.ra, dec: o.dec,
                  colour: used.indexOf(oi) >= 0 ? '#56d98a' : '#ff6b6b', label: o.name };
@@ -13177,6 +13347,13 @@ Modes.defs.mock = {
     Sky.locked = false;
     Modes.override = null;
     Sky.overlays = [];
+    /* The paper goes in the bin with the round. Everything drawn on it - your
+       marks, the revealed answers, the lines and circles - belongs to that
+       sheet, and leaving it behind means the next screen opens under a layer
+       of somebody else's working. A fresh paper already starts clean; this is
+       the other end of the same rule. */
+    Tools.ink.length = 0;
+    Mock.picks = []; Mock.forIdx = -1;
     Sky.needsDraw = true;
     stageHTML('<h3>Mock</h3><div class="verdict ' +
       (total && marks / total >= 0.5 ? 'ok' : 'info') + '"><b>' + Math.round(marks) +
@@ -16254,16 +16431,23 @@ function paper61PlanetChartTask(round) {
     k: 'mark-planets', marks: 6, dateMs: found.dateMs,
     targets: found.planets,
     of: found.planets.map(function (p) { return { name: ptCap(p.name) }; }),
-    text: 'Three small amber planet symbols are plotted at their real positions for ' +
-          date + ' UTC. Put a square around each one.'
+    text: 'Three planets are plotted at their real positions for ' + date +
+          ' UTC, each as a circle with a cross through it. Put a square around each one.'
   };
 }
 
 function paper61PlanetTaskOverlays(t, reveal, matched) {
   var out = [];
+  /* The marker has to be findable, which the first one was not: a four-pixel
+     cream cross (#e4c982) on the white printed chart is invisible, so the task
+     asked you to square three things you could not see. A planet on a real
+     chart is printed as a circle with a cross through it, dark on paper, and
+     that is what this draws - in ink on the printed chart, in amber on the
+     dark one, big enough to pick out among the stars. */
+  var paper = optMerged().printChart;
   t.targets.forEach(function (p, i) {
-    out.push({ t: 'symbol', symbol: 'plus', size: 4, ra: p.ra, dec: p.dec,
-               colour: '#e4c982' });
+    out.push({ t: 'symbol', symbol: 'target', size: 5, ra: p.ra, dec: p.dec,
+               colour: paper ? '#1a1a1a' : '#ffc14d' });
     if (reveal) {
       out.push({ t: 'symbol', symbol: 'box', size: 9, ra: p.ra, dec: p.dec,
                  colour: matched && matched.indexOf(i) >= 0 ? MOCK_TRUTH : '#ff6b6b',
@@ -16276,7 +16460,16 @@ function paper61PlanetTaskOverlays(t, reveal, matched) {
 function paper61CheckPlanets(t) {
   if (!Mock.picks.length) return null;
   var used = [], got = 0, errors = [];
+  /* Named marks first, each against the planet it names - see mark-list. */
   Mock.picks.slice(0, 3).forEach(function (pick) {
+    var oi = pick[2];
+    if (oi == null || oi < 0 || used.indexOf(oi) >= 0) return;
+    used.push(oi);
+    var e = sepDeg(pick[0], pick[1], t.targets[oi].ra, t.targets[oi].dec);
+    if (e < 4) { got++; errors.push(e); }
+  });
+  Mock.picks.slice(0, 3).forEach(function (pick) {
+    if (pick[2] != null && pick[2] >= 0) return;
     var best = -1, dist = 4;
     t.targets.forEach(function (p, i) {
       if (used.indexOf(i) >= 0) return;
