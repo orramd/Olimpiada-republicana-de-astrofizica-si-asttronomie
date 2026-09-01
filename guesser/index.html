@@ -109,10 +109,11 @@
 
 @media (max-width: 900px) {html.ui-desktop #settings,html.ui-desktop #stage{ width: calc(100vw - 20px); left: 10px; right: 10px; max-height: 52vh; }html.ui-desktop #stage{ top: auto; bottom: 10px; }html.ui-desktop #ioaaLab{ right: 10px; bottom: calc(52vh + 20px); min-height: 190px; }html.ui-desktop #inspect{ display: none; }html.ui-desktop #readout{ display: none; }
 }html.ui-desktop .row2{ display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0 2px; }html.ui-desktop .row2 input{ width: 100%; }html.ui-desktop .tools{ position: fixed; left: 12px; top: 56px; z-index: 40;
-         display: flex; flex-direction: column; gap: 6px; }html.ui-desktop .tools.hidden{ display: none; }html.ui-desktop .tools .tool{ display: flex; align-items: center; gap: 6px;
+         display: flex; flex-direction: column; gap: 6px; }html.ui-desktop .tools.hidden{ display: none; }html.ui-desktop .tools .tool{ display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+  font-size: 12px;
                background: rgba(9,12,20,0.92); border: 1px solid #222c40;
-               border-radius: 8px; padding: 5px 8px; }html.ui-desktop .tools .tool b{ font: 600 13px ui-monospace, Consolas, monospace; color: #ffd479;
-                 min-width: 62px; }html.ui-desktop .tools .tool .lab{ font-size: 12px; color: #8f9bb3; }html.ui-desktop .shot{ margin: 10px 0 4px; }html.ui-desktop .shot img{ width: 100%; border-radius: 8px; display: block; border: 1px solid #1d2637; }html.ui-desktop .shot .note{ margin-top: 4px; }html.ui-desktop .chartfull .bar{
+               border-radius: 8px; padding: 5px 8px; }html.ui-desktop .tools .tool b{ font: 600 12px ui-monospace, Consolas, monospace; color: #ffd479;
+                 min-width: 62px; }html.ui-desktop .tools .tool .lab{ font-size: 11px; color: #8f9bb3; }html.ui-desktop .shot{ margin: 10px 0 4px; }html.ui-desktop .shot img{ width: 100%; border-radius: 8px; display: block; border: 1px solid #1d2637; }html.ui-desktop .shot .note{ margin-top: 4px; }html.ui-desktop .chartfull .bar{
   transform: translateY(-100%);
   transition: transform .18s ease;
 }html.ui-desktop .chartfull .bar:hover,html.ui-desktop .chartfull .bar:focus-within{ transform: translateY(0); }html.ui-desktop .chartfull .barpeek{
@@ -689,6 +690,9 @@ function fuzzy(a, b, level) {
 
 /* ------------------------------------------------------------ misc */
 function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+/* The closest the view may be zoomed, in degrees. */
+var VIEW_MIN_FOV = 0.004;
+
 function el(id) { return document.getElementById(id); }
 
 /* Writing into a panel that may already be gone.
@@ -2600,6 +2604,8 @@ function tick(now) {
       }
     } else {
       drawSky();
+      /* So the field of view in the bar follows the view, not the mouse. */
+      if (typeof updateReadout === 'function') updateReadout();
     }
   }
   requestAnimationFrame(tick);
@@ -3248,9 +3254,47 @@ function dsoCard(i) {
   if (d.tier === 1) h += kv('Priority', '<span style="color:var(--accent)">Most important</span>');
   else if (d.tier === 2) h += kv('Priority', 'Important');
   h += '</dl>';
-  h += imageBlock(d.m);
+  /* Instruction first, photograph second: you read how to find it, then look
+     at what you are trying to find. The other way round meant scrolling back
+     up past a large picture to re-read the sentence you needed. */
   h += primaryHintBlock(d);
+  h += imageBlock(d.m);
   return h;
+}
+
+/* The bar along the bottom.
+
+   It used to be written only from the pointermove handler, which meant the
+   field of view it quotes was whatever it had been when the mouse last moved.
+   Zoom with the wheel, or with + and -, or let a mode reframe the sky, and the
+   number sat there being wrong until you happened to jiggle the mouse. It is
+   called from the draw loop now, so it follows the view rather than the mouse.
+
+   The field also gets units that suit its size: 0.4 degrees reads better as
+   24 arcminutes, and at the eyepiece you are often below that. */
+function fmtFov(deg) {
+  if (deg >= 2) return deg.toFixed(1) + '°';
+  if (deg >= 0.5) return deg.toFixed(2) + '°';
+  if (deg >= 1 / 60) return (deg * 60).toFixed(1) + '′';
+  return (deg * 3600).toFixed(1) + '″';
+}
+
+function updateReadout() {
+  var n = el('readout');
+  if (!n || Sky.showFps) return;   /* Shift+F owns the bar while it is on */
+  var orient = Sky.roll
+    ? 'rotated ' + Math.round(((Sky.roll % 360) + 360) % 360) + '°'
+    : 'N up, E left';
+  var field = fmtFov(Sky.fov) + ' field';
+  if (Sky.hideCoords || !Sky.pointer) {
+    n.textContent = field + '   ·   ' + orient +
+      (Sky.hideCoords ? '   ·   coordinates hidden' : '');
+    return;
+  }
+  var rd = unproject(Sky.pointer[0], Sky.pointer[1]);
+  if (!rd) { n.textContent = field + '   ·   ' + orient; return; }
+  n.textContent = 'RA ' + fmtRA(rd[0]) + '   Dec ' + fmtDec(rd[1]) +
+    '   ·   ' + field + '   ·   ' + orient;
 }
 
 function kv(k, v) { return '<dt>' + k + '</dt><dd>' + v + '</dd>'; }
@@ -3420,19 +3464,30 @@ function bindPointer() {
              is east, i.e. increasing RA. */
           Sky.ra = (drag.ra + ax * k / Math.max(0.12, Math.cos(Sky.dec * Math.PI / 180)) + 360000) % 360;
         }
+        /* In the telescope, sweeping the sky has to move the telescope.
+
+           The eyepiece is drawn by pointing Sky at Scope.ra/dec, and the
+           panel re-runs that on every render. So a drag that moved only Sky
+           survived exactly until the next render - and clicking anything
+           renders, which is why a click appeared to throw the view back.
+           The drag was never lost; it had simply never been told to the
+           instrument. Tell it: aim through the glass, and the direction you
+           are facing with your own eyes. */
+        if (Modes.currentName === 'scope' && typeof scopeThroughGlass === 'function') {
+          if (scopeThroughGlass()) {
+            Scope.ra = Sky.ra; Scope.dec = Sky.dec;
+          } else if (typeof ptRaDecToAltAz === 'function') {
+            var aa = ptRaDecToAltAz(Sky.ra, Sky.dec, Scope.lat, scopeLst());
+            Scope.nakedAlt = clamp(aa.alt, -20, 88);
+            Scope.nakedAz = ((aa.az % 360) + 360) % 360;
+          }
+        }
         Sky.needsDraw = true;
       }
     } else {
-      var rd = unproject(e.clientX, e.clientY);
       Sky.pointer = [e.clientX, e.clientY];
       if (Sky.overlays.some(function (o) { return o.t === 'aim'; })) Sky.needsDraw = true;
-      var orient = Sky.roll
-        ? 'rotated ' + Math.round(((Sky.roll % 360) + 360) % 360) + '°'
-        : 'N up, E left';
-      el('readout').textContent = Sky.hideCoords
-        ? Sky.fov.toFixed(1) + '° field   ·   ' + orient + '   ·   coordinates hidden'
-        : 'RA ' + fmtRA(rd[0]) + '   Dec ' + fmtDec(rd[1]) +
-          '   ·   ' + Sky.fov.toFixed(1) + '° field   ·   ' + orient;
+      updateReadout();
     }
   });
 
@@ -3459,6 +3514,13 @@ function bindPointer() {
     } else {
       showInspector(null);
     }
+  });
+
+  /* Right-click sets the instrument down and leaves the drawing. Only when one
+     is actually out - otherwise the ordinary context menu is none of our
+     business. */
+  c.addEventListener('contextmenu', function (e) {
+    if (typeof toolsPutDown === 'function' && toolsPutDown()) e.preventDefault();
   });
 
   c.addEventListener('wheel', function (e) {
@@ -3641,7 +3703,20 @@ function refreshMagHint() {
    a drawing at 175 - and the whole round is about knowing how much sky you are
    looking at. Swap the eyepiece instead. */
 function viewZoomLocked() {
-  return Modes.currentName === 'scope' && scopeThroughGlass();
+  /* Zoom used to be refused behind the glass, on the reasoning that an eyepiece
+     has one field and you change eyepieces rather than zoom. True of the
+     optics, and wrong for the screen: at the 10 mm the field is 0.42 degrees
+     across a thousand pixels, so a pair 2.3 arcseconds apart - which this
+     telescope resolves three times over - lands inside one star's disc and
+     cannot be seen apart however good the night is. The eye at the eyepiece has
+     no pixels. So zooming is allowed, and the panel says when the view is
+     closer than the eyepiece really is.
+
+     Except while a drift is being timed. That measurement is the width of the
+     eyepiece's field, and a magnified view would time a smaller one and mark
+     a correct answer wrong. */
+  return Modes.currentName === 'scope' && scopeThroughGlass() &&
+         !!(Scope.drift && Scope.drift.active);
 }
 
 function zoomAt(px, py, factor) {
@@ -3656,7 +3731,20 @@ function zoomAt(px, py, factor) {
     return;
   }
   var before = unproject(px, py);
-  Sky.fov = clamp(Sky.fov * factor, 0.4, mockMaxFov());
+  /* The floor used to be 0.4 degrees, which over a thousand pixels is 1.4
+     arcseconds to the pixel - so a 2.3 arcsecond pair like the Double Double
+     landed inside a single star's disc and no amount of scrolling could
+     separate it. The eye at the eyepiece has no such limit; the screen does.
+     0.004 degrees is 14 arcseconds across the view, which is closer than any
+     pair in the catalogue needs. */
+  Sky.fov = clamp(Sky.fov * factor, VIEW_MIN_FOV, mockMaxFov());
+  /* And in the telescope, tell the instrument - otherwise the next render
+     reasserts the eyepiece's own field and the zoom is thrown away, which is
+     the same way a drag used to be lost. */
+  if (Modes.currentName === 'scope' && typeof scopeThroughGlass === 'function'
+      && scopeThroughGlass() && typeof scopeFov === 'function') {
+    Scope.zoom = clamp(scopeFov() / Math.max(1e-6, Sky.fov), 1, 200);
+  }
   updateBasis();
   var after = unproject(px, py);
   /* keep the sky under the cursor put */
@@ -3761,7 +3849,12 @@ var Tools = {
 
      The radius is kept as a fraction of the chart's own radius rather than in
      pixels, so it stays glued to the stars through a zoom or a turn. */
-  compass: { on: false, centre: null, radiusFrac: 0 },
+  /* fixedDeg: a radius typed in degrees. With one set, a single click puts
+     the centre down and swings the circle at exactly that angular radius -
+     which is what the papers ask for. The circumpolar circle is one whose
+     radius equals the latitude, and eyeballing that against a scale bar is
+     the sort of thing you get wrong at one in the morning. */
+  compass: { on: false, centre: null, radiusFrac: 0, fixedDeg: null },
   point: { on: false, name: '' },
   /* Ruler and compass both want the next click. Whichever you reached for last
      gets it, which is how it works on a desk - you are holding one of them. */
@@ -3925,9 +4018,44 @@ function toolsToggleCompass(force) {
   toolsRender();
 }
 
+/* The paper radius that corresponds to a given angular radius here.
+
+   Measured rather than derived: step `deg` away from the centre along four
+   bearings, project each, and take the mean distance in pixels. Four because
+   away from the middle of a chart the projection is not isotropic - a circle
+   of constant angular radius is not a circle on the paper - and the mean is
+   the honest single number for a pair of compasses, which can only draw a
+   real circle. */
+function toolsFracForDegrees(centre, deg) {
+  if (!(deg > 0)) return 0;
+  var cp = projRaDec(centre[0], centre[1]);
+  if (!cp) return 0;
+  var sum = 0, n = 0;
+  [0, 90, 180, 270].forEach(function (b) {
+    var q = ptDestination(centre[0], centre[1], b, deg);
+    var p = projRaDec(q[0], q[1]);
+    if (p) { sum += Math.hypot(p.x - cp.x, p.y - cp.y); n++; }
+  });
+  if (!n) return 0;
+  return (sum / n) / Math.max(1, Sky.scale);
+}
+
 function toolsCompassClick(px, py) {
   if (!Tools.compass.on) return false;
   var rd = unproject(px, py);
+  /* A typed radius needs one click, not two. */
+  var fixed = Tools.compass.fixedDeg;
+  if (fixed > 0) {
+    var frac = toolsFracForDegrees([rd[0], rd[1]], fixed);
+    if (frac > 0) {
+      inkCircle([rd[0], rd[1]], frac, fmtDeg(fixed), 'tool');
+      Tools.compass.radiusFrac = frac;
+    }
+    Tools.compass.centre = null;
+    Sky.needsDraw = true;
+    toolsRender();
+    return true;
+  }
   if (!Tools.compass.centre) {
     Tools.compass.centre = [rd[0], rd[1]];
     Tools.compass.radiusFrac = 0;
@@ -3961,6 +4089,32 @@ function toolsPointClick(px, py) {
   var count = Tools.ink.filter(function (m) { return m.source === 'point'; }).length;
   inkDot(rd[0], rd[1], Tools.point.name.trim() || ('Point ' + (count + 1)),
          '#ffd479', 'point');
+  toolsRender();
+  return true;
+}
+
+/* Put the instrument down without clearing the paper.
+
+   While a tool is out it takes every click, which is right - you are holding
+   it. But the papers ask you to draw a circle and then mark something, and
+   there was no way to do the second without turning the tool off from the
+   panel, which is a reach away from where you are working and easy to mistake
+   for erasing what you just drew.
+
+   Right-click is the desk gesture: you set the compasses down beside the
+   sheet. The ink stays exactly where it is; the next left-click is an answer
+   again. A half-finished measurement is dropped, because a ruler with one end
+   placed is not a measurement. */
+function toolsPutDown() {
+  var was = Tools.ruler.on || Tools.compass.on || Tools.point.on;
+  if (!was) return false;
+  if (Tools.ruler.pts.length === 1) Tools.ruler.pts = [];
+  if (Tools.compass.centre && !Tools.compass.radiusFrac) Tools.compass.centre = null;
+  Tools.ruler.on = false;
+  Tools.compass.on = false;
+  Tools.point.on = false;
+  Tools.lastTool = null;
+  Sky.needsDraw = true;
   toolsRender();
   return true;
 }
@@ -4178,18 +4332,21 @@ function toolsRender() {
   }
   if (r.on) {
     bits.push('<div class="tool"><span class="lab">Ruler</span>' +
-      '<button class="btn sm" id="ruMode">' + (r.arc ? 'flexible' : 'straight') + '</button>' +
-      '<b>' + (m ? m.cm.toFixed(2) + ' cm · ' + fmtDeg(m.deg) : 'click two points') + '</b>' +
-      '<button class="btn sm" id="ruKeep">Leave a trace</button>' +
+      '<button class="btn sm" id="ruMode">' + (r.arc ? 'arc' : 'straight') + '</button>' +
+      '<b>' + (m ? m.cm.toFixed(2) + ' cm · ' + fmtDeg(m.deg) : 'two points') + '</b>' +
+      '<button class="btn sm" id="ruKeep" title="Leave the line on the chart">Trace</button>' +
       '<button class="btn sm" id="ruClr">Clear</button>' +
       '<button class="btn sm" id="ruX">×</button></div>');
   }
   if (Tools.compass.on) {
     var cp = Tools.compass;
     bits.push('<div class="tool"><span class="lab">Compass</span>' +
-      '<b>' + (cp.centre ? 'centre set — click the radius'
-               : cp.radiusFrac ? 'circle drawn — click a new centre'
-               : 'click a centre, then a point on the circle') + '</b>' +
+      '<input type="text" id="cpRad" placeholder="r°" title="A radius in degrees, ' +
+      'for an exact circle in one click. Empty: click centre, then edge." value="' +
+      (cp.fixedDeg != null ? cp.fixedDeg : '') + '" style="width:46px">' +
+      '<b>' + (cp.fixedDeg > 0 ? 'click a centre'
+               : cp.centre ? 'now the edge'
+               : 'centre, then edge') + '</b>' +
       '<button class="btn sm" id="cpX">×</button></div>');
   }
   if (Tools.point.on) {
@@ -4203,14 +4360,17 @@ function toolsRender() {
   }
   if (toolInk.length) {
     var lastKind = toolInk[toolInk.length - 1].t;
-    bits.push('<div class="tool"><span class="lab">Tool marks</span>' +
-      '<b>' + toolInk.length + ' on the chart</b>' +
-      '<button class="btn sm" id="inkUndo">Undo the ' +
+    /* Four buttons for undo was three too many: "undo the circle" and "undo
+       last circle" did the same thing whenever the last mark was a circle.
+       One undo for the last mark, two for reaching past it, and erase. */
+    bits.push('<div class="tool"><span class="lab">Marks</span>' +
+      '<b>' + toolInk.length + '</b>' +
+      '<button class="btn sm" id="inkUndo" title="Undo the last mark">↶ ' +
       ({ circle: 'circle', line: 'line', poly: 'arc', dot: 'mark' }[lastKind] || 'mark') +
       '</button>' +
-      '<button class="btn sm" id="inkUndoLine">Undo last line</button>' +
-      '<button class="btn sm" id="inkUndoCircle">Undo last circle</button>' +
-      '<button class="btn sm" id="inkClr">Erase tool marks</button></div>');
+      '<button class="btn sm" id="inkUndoLine" title="Undo the last line">↶ line</button>' +
+      '<button class="btn sm" id="inkUndoCircle" title="Undo the last circle">↶ circle</button>' +
+      '<button class="btn sm" id="inkClr" title="Erase every tool mark">Erase</button></div>');
   }
   if (Tools.rotateOpen) {
     bits.push('<div class="tool"><span class="lab">Rotate</span>' +
@@ -4254,6 +4414,15 @@ function toolsRender() {
   }
   if (Tools.compass.on) {
     el('cpX').addEventListener('click', function () { toolsToggleCompass(false); });
+    if (el('cpRad')) {
+      el('cpRad').addEventListener('input', function () {
+        var v = parseFloat(String(this.value).replace(',', '.'));
+        /* Anything not a sensible angle means "no fixed radius", which is the
+           two-click behaviour, so an empty box is not a special case. */
+        Tools.compass.fixedDeg = (isFinite(v) && v > 0 && v <= 179) ? v : null;
+        Tools.compass.centre = null;
+      });
+    }
   }
   if (Tools.point.on) {
     el('ptName').addEventListener('input', function () { Tools.point.name = this.value; });
@@ -5259,8 +5428,8 @@ Modes.defs.learn = {
         kv('RA / Dec', '<span class="mono">' + fmtRA(d.ra) + '</span><br><span class="mono">' + fmtDec(d.dec) + '</span>') +
         (dsoAllDesig(d).length > 1 ? kv('Also', dsoAllDesig(d).slice(1).map(esc).join(' · ')) : '') +
         '</dl>' +
-        imageBlock(d.m) +
         primaryHintBlock(d) +
+        imageBlock(d.m) +
         '<div class="btnrow"><button class="btn primary" id="lnGo">I have got it — test me</button></div>';
       el('lnGo').addEventListener('click', function () {
         setProg(d, Math.max(progOf(d), 1)); Learn.step = 1; self.render();
@@ -13700,6 +13869,12 @@ function scopeObjectSizeArcmin(d) {
 
 var Scope = {
   eyepiece: 25,
+  /* How much closer than the eyepiece's own field you have asked to look.
+     A real eyepiece has one field and you change eyepieces, not zoom - but the
+     screen is not an eye, and at 1.5 arcseconds to the pixel a pair the
+     telescope splits easily is still one dot. This magnifies the simulation,
+     not the optics, and the panel says so. */
+  zoom: 1,
   /* 'naked' is standing next to the instrument with your eyes: the ordinary
      sky, no vignette, wide field. Space walks in towards the eyepiece,
      Backspace walks back out. The telescope is a thing you put your eye to,
@@ -13781,7 +13956,8 @@ function scopeApplyView() {
     updateBasis();
     return;
   }
-  Sky.ra = Scope.ra; Sky.dec = clamp(Scope.dec, -89.8, 89.8); Sky.fov = scopeFov();
+  Sky.ra = Scope.ra; Sky.dec = clamp(Scope.dec, -89.8, 89.8);
+  Sky.fov = Math.max(VIEW_MIN_FOV, scopeFov() / Math.max(1, Scope.zoom || 1));
   /* The instrument inverts. */
   Sky.roll = (180 + Scope.roll) % 360;
   Sky.locked = false;
@@ -14521,6 +14697,8 @@ function scopeNewDriftTask() {
      straight past "Start drift" to the running state on a state left over
      from the last star. */
   Scope.drift.active = false;
+  /* Timing the field means timing the eyepiece's field, so start from it. */
+  Scope.zoom = 1; scopeApplyView();
   return { kind: 'drift', star: s, checked: false };
 }
 
@@ -14752,7 +14930,12 @@ Modes.defs.scope = {
     }
     Sky.needsDraw = true;
 
-    var fovTxt = scopeFov() >= 1 ? scopeFov().toFixed(2) + '°' : (scopeFov() * 60).toFixed(1) + '′';
+    /* What you are actually looking at, not what the eyepiece alone would
+       give - saying 25.0' while the view is 3.3' across is worse than saying
+       nothing. The eyepiece's own figure follows it when they differ. */
+    var shownFov = scopeThroughGlass()
+      ? scopeFov() / Math.max(1, Scope.zoom || 1) : scopeFov();
+    var fovTxt = shownFov >= 1 ? shownFov.toFixed(2) + '°' : (shownFov * 60).toFixed(1) + '′';
     var head =
       '<div class="btnrow">' +
       '<button class="btn sm' + (Scope.mode === 'naked' ? ' primary' : '') + '" id="scNaked">' +
@@ -14774,6 +14957,12 @@ Modes.defs.scope = {
           '</div>'
         : '') +
       '<div class="note">Field of view <b>' + fovTxt + '</b>' +
+      (scopeThroughGlass() && Scope.zoom > 1.02
+        ? ' · the ' + Scope.eyepiece + ' mm gives ' +
+          (scopeFov() >= 1 ? scopeFov().toFixed(2) + '°' : (scopeFov() * 60).toFixed(1) + '′') +
+          ', shown <b>' + Scope.zoom.toFixed(1) + '× closer</b> — magnifying the ' +
+          'picture, not the optics; scroll out to return'
+        : '') +
       (glass ? ' · image inverted (a plain 180° roll)' : ' · your own eyes, the right way up') +
       (Scope.roll ? ' · rotated ' + Math.round(((Scope.roll % 360) + 360) % 360) + '°' : '') +
       ' · ' + SCOPE.aperture + ' mm, f/' + SCOPE.focalRatio + ', assumed for every year alike.</div>' +
@@ -14908,6 +15097,7 @@ Modes.defs.scope = {
       el(b[0]).addEventListener('click', function () {
         if (Scope.eyepiece === b[1]) return;
         Scope.eyepiece = b[1];
+        Scope.zoom = 1;          /* a new eyepiece, not the old magnification */
         /* Set the field first, then jog: the shift has to be measured against
            the field you are swapping to, not the one you are leaving, or
            dropping to the 10 mm throws the target clean out of it. */
@@ -19868,6 +20058,7 @@ function variableChecks() {
 window.persist = persist;
 window.drawToolsOverlay = drawToolsOverlay;
 window.drawDoubleStars = drawDoubleStars;
+window.updateReadout = updateReadout;
 /* ---- js/99-debug.js ---- */
 /* ==========================================================================
    One door in from the console, and from the fuzz harness.
