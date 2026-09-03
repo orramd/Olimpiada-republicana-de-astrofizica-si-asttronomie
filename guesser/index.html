@@ -2926,6 +2926,7 @@ function persist() {
   /* Explore's own opening position, kept separately - see SKY_EXPLORE. */
   if (typeof SKY_EXPLORE !== 'undefined' && Modes.base === SKY_EXPLORE) {
     STORE.exploreOpt = Object.assign({}, SKY_EXPLORE);
+    STORE.exploreOptV = EXPLORE_PRESET_V;
   }
   saveStore(STORE);
 }
@@ -4815,15 +4816,31 @@ var SKY_BLANK = {
 };
 
 /* Explore is the one place nothing is being asked, so it opens the other way:
-   a dark-site sky with the figures and the boundaries drawn and the Bayer
-   letters on. */
+   everything that is *there* is drawn, and nothing that is a construction is.
+
+   That is the Stellarium arrangement and it is the right one for a sky you are
+   looking around rather than being tested on: the figures, the abbreviations
+   beside them, the stars with their Bayer letters, and the whole deep-sky
+   catalogue with its labels. What stays off is the scaffolding - the grid, the
+   ecliptic and galactic lines, and the reference points - because the equinox
+   and the galactic centre are not objects in the sky, they are marks you put
+   on a chart, and having them drawn for you is exactly the help the rest of
+   the app is for.
+
+   conNames was false here, which is why the constellations went unlabelled in
+   the one mode whose job is telling you what you are looking at. */
 var SKY_EXPLORE = {
   limMag: 6.50, thinOut: true,
   lines: true, lineBright: true, bounds: true,
-  conNames: false, conNamesFull: false,
+  conNames: true, conNamesFull: false,
   grid: false, ecliptic: false, galactic: false, refPoints: false,
-  starLabels: 'bayer', dsos: true, dsoLabels: true
+  starLabels: 'bayer',
+  dsos: true, dsoLabels: true,
+  showM: true, showC: true, showOther: true
 };
+/* Bumped when the opening position changes, so a preset that was remembered
+   from an older version does not quietly keep the old answer - see below. */
+var EXPLORE_PRESET_V = 2;
 /* Kept so there is a way back. Explore remembers what you change there, which
    is right for a preference and wrong for a mistake: one stray drag of the
    magnitude slider and there was nothing in the app that would undo it, because
@@ -4832,10 +4849,17 @@ var SKY_EXPLORE_SHIPPED = Object.assign({}, SKY_EXPLORE);
 /* Explore is not a drill, so a change you make there is a preference rather
    than an answer being uncovered: it is kept and comes back next time. Every
    other mode re-reads its blank slate on the way in. */
-if (STORE.exploreOpt) {
+if (STORE.exploreOpt && STORE.exploreOptV === EXPLORE_PRESET_V) {
   for (var _ek in SKY_EXPLORE) {
     if (_ek in STORE.exploreOpt) SKY_EXPLORE[_ek] = STORE.exploreOpt[_ek];
   }
+} else if (STORE.exploreOpt) {
+  /* A remembered preset from before this opening position existed. Keeping it
+     would mean the change never reaches anyone who has already used the app,
+     which is everybody it is for. The new position wins once; anything changed
+     from here is remembered again as usual. */
+  delete STORE.exploreOpt;
+  STORE.exploreOptV = EXPLORE_PRESET_V;
 }
 
 /* The three layers, applied in order: your settings, the mode's opening
