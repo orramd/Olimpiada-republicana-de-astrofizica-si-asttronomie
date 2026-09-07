@@ -2249,11 +2249,132 @@ function drawRefPoints() {
   });
 }
 
+/* ------------------------------------------------ what is worth drawing
+
+   The figures, the boundaries and every label were drawn for all 88
+   constellations on every frame, whatever the view: each segment subdivided
+   into a great-circle path, each vertex projected, and then thrown away
+   because it landed off screen. That is most of the work in a zoomed-in frame,
+   and zooming in is exactly when there is least reason to do it.
+
+   A constellation gets one bounding circle, computed once from the vertices it
+   already has, and a frame skips it outright unless that circle reaches the
+   view. The test is one dot product against work that would otherwise be
+   hundreds of projections. */
+
+var ConBound = null;
+
+function conBoundsBuild() {
+  ConBound = {};
+  function fold(ab, ra, dec) {
+    var b = ConBound[ab] || (ConBound[ab] = { v: [0, 0, 0], n: 0, pts: [] });
+    var u = toVec(ra, dec);
+    b.v[0] += u[0]; b.v[1] += u[1]; b.v[2] += u[2];
+    b.n++;
+    b.pts.push(u);
+  }
+  var ab, i, segs;
+  for (ab in DATA.lines) {
+    segs = DATA.lines[ab];
+    for (i = 0; i < segs.length; i++) {
+      fold(ab, segs[i][0], segs[i][1]);
+      fold(ab, segs[i][2], segs[i][3]);
+    }
+  }
+  for (ab in DATA.bounds) {
+    DATA.bounds[ab].forEach(function (ring) {
+      for (var j = 0; j < ring.length; j++) fold(ab, ring[j][0], ring[j][1]);
+    });
+  }
+  for (ab in ConBound) {
+    var b = ConBound[ab];
+    var len = Math.sqrt(b.v[0] * b.v[0] + b.v[1] * b.v[1] + b.v[2] * b.v[2]) || 1;
+    b.c = [b.v[0] / len, b.v[1] / len, b.v[2] / len];
+    var worst = 0;
+    for (i = 0; i < b.pts.length; i++) {
+      var d = Math.acos(clamp(b.c[0] * b.pts[i][0] + b.c[1] * b.pts[i][1] +
+                              b.c[2] * b.pts[i][2], -1, 1));
+      if (d > worst) worst = d;
+    }
+    b.r = worst * 180 / Math.PI;
+    b.pts = null;                      // the vertices were only needed to size it
+  }
+}
+
+/* How far from the centre the view actually reaches, in degrees.
+
+   Estimating this as half the field times the aspect ratio is wrong, and
+   wrong in the direction that loses figures: away from the centre these
+   projections stretch, so at a 110 degree field the corner is much further
+   out than 65 degrees and constellations with stars plainly on screen were
+   being culled - fourteen of them across a sweep of forty-eight views. So
+   ask the projection instead of modelling it: unproject the corners and the
+   edge midpoints and take the worst. Eight unprojections a frame is nothing
+   against the hundreds this saves, and a corner that does not unproject at
+   all means the view spills off the projection, where nothing may be culled.
+*/
+function viewReachDeg() {
+  var W = Sky.w, H = Sky.h;
+  if (!W || !H) return 180;
+  var pts = [[0, 0], [W, 0], [0, H], [W, H],
+             [W / 2, 0], [W / 2, H], [0, H / 2], [W, H / 2]];
+  var worst = 0;
+  for (var i = 0; i < pts.length; i++) {
+    var rd = unproject(pts[i][0], pts[i][1]);
+    if (!rd) return 180;
+    var d = sepDeg(Sky.ra, Sky.dec, rd[0], rd[1]);
+    if (!isFinite(d)) return 180;
+    if (d > worst) worst = d;
+  }
+  return Math.min(180, worst + 2);
+}
+
+/* Prepared once per frame. Doing this per constellation - a toVec and an acos
+   each - cost more at a wide field than the drawing it was meant to save. */
+var _cullMemo = null, _cullKey = '';
+function conCullPrep() {
+  if (!ConBound) conBoundsBuild();
+  /* Figures and boundaries both ask, so the eight unprojections behind the
+     reach would otherwise be done twice for the same frame. */
+  var key = Sky.ra + ',' + Sky.dec + ',' + Sky.fov + ',' + Sky.w + ',' + Sky.h +
+            ',' + (Sky.roll || 0) + ',' + Sky.projection;
+  if (_cullMemo && _cullKey === key) return _cullMemo;
+  var reach = viewReachDeg();
+  _cullKey = key;
+  _cullMemo = { on: reach < 175, reach: reach, v: toVec(Sky.ra, Sky.dec) };
+  return _cullMemo;
+}
+
+function conInView(ab, cull) {
+  if (!cull || !cull.on) return true;
+  var b = ConBound[ab];
+  if (!b) return true;                 // unknown: draw it rather than lose it
+  if (b.cosFor !== cull.reach) {
+    var lim = cull.reach + b.r;
+    b.cosFor = cull.reach;
+    b.cosLim = lim >= 180 ? -2 : Math.cos(lim * Math.PI / 180);
+  }
+  return (cull.v[0] * b.c[0] + cull.v[1] * b.c[1] + cull.v[2] * b.c[2]) >= b.cosLim;
+}
+
+/* measureText is one of the more expensive calls on a canvas and the same
+   dozen strings are measured every frame. The font is fixed per caller, so a
+   width is a property of the string. */
+var TextW = {};
+function textWidth(ctx, key, txt) {
+  var k = key + '\u0000' + txt;
+  var w = TextW[k];
+  if (w === undefined) { w = ctx.measureText(txt).width; TextW[k] = w; }
+  return w;
+}
+
 function drawBounds() {
   var ctx = Sky.ctx;
   ctx.strokeStyle = '#232c42'; ctx.lineWidth = 1; ctx.setLineDash([3, 4]);
+  var cull = conCullPrep();
   for (var ab in DATA.bounds) {
     if (OPT.conFilter && OPT.conFilter.length && OPT.conFilter.indexOf(ab) < 0) continue;
+    if (!conInView(ab, cull)) continue;
     DATA.bounds[ab].forEach(function (ring) { strokeRaDecPath(ring, true); });
   }
   ctx.setLineDash([]);
@@ -2263,6 +2384,7 @@ function drawConLines() {
   var ctx = Sky.ctx;
   ctx.strokeStyle = OPT.lineBright ? '#6f88c4' : '#3d4f7a';
   ctx.lineWidth = 1.15; ctx.setLineDash([]); ctx.lineCap = 'round';
+  var cull = conCullPrep();
   for (var ab in DATA.lines) {
     /* Every figure but this one. It is the middle rung of learning a star:
        harder than being shown the shape it belongs to, easier than a bare sky,
@@ -2270,6 +2392,7 @@ function drawConLines() {
        and the gap between them is the constellation you are looking for. */
     if (OPT.hideLinesFor === ab) continue;
     if (OPT.conFilter && OPT.conFilter.length && OPT.conFilter.indexOf(ab) < 0) continue;
+    if (!conInView(ab, cull)) continue;
     var segs = DATA.lines[ab];
     for (var i = 0; i < segs.length; i++) {
       var s = segs[i];
@@ -2511,7 +2634,7 @@ function drawStarLabels() {
   ctx.font = '11.5px "Segoe UI", system-ui, sans-serif';
   ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
   ctx.fillStyle = OPT.starLabels === 'bayer' ? '#9fb4e8' : '#c8cfdd';
-  var placed = 0, lim = effLabelMag();
+  var placed = 0, lim = effLabelMag(), lm = effLimMag(), k = zoomK();
   for (var q = 0; q < STARS_BY_MAG.length && placed < 400; q++) {
     var i = STARS_BY_MAG[q];
     if (STARS[i][2] > lim) break;
@@ -2519,12 +2642,14 @@ function drawStarLabels() {
     if (OPT.hideStars && OPT.hideStars.indexOf(i) >= 0) continue;
     var rec = NAMED_BY_STAR[i];
     if (!rec) continue;
-    var txt = starLabel(rec, OPT.starLabels);
-    if (!txt) continue;
+    /* Project first. Most of the catalogue is behind you at any moment, and
+       building its label to throw away is the commonest wasted work here. */
     var p = projRaDec(STARS[i][0], STARS[i][1]);
     if (!p || p.x < 0 || p.x > Sky.w || p.y < 0 || p.y > Sky.h) continue;
-    var r = starRadius(STARS[i][2], effLimMag(), zoomK());
-    var w = ctx.measureText(txt).width;
+    var txt = starLabel(rec, OPT.starLabels);
+    if (!txt) continue;
+    var r = starRadius(STARS[i][2], lm, k);
+    var w = textWidth(ctx, 'star', txt);
     if (!LabelGrid.claim(p.x + r + 3, p.y, w)) continue;
     ctx.fillText(txt, p.x + r + 3, p.y);
     placed++;
@@ -4836,11 +4961,18 @@ var SKY_EXPLORE = {
   grid: false, ecliptic: false, galactic: false, refPoints: false,
   starLabels: 'bayer',
   dsos: true, dsoLabels: true,
-  showM: true, showC: true, showOther: true
+  showM: true, showC: true, showOther: true,
+  /* The catalogue is not gated by the naked-eye limit here. With magToDso
+     on, everything fainter than the star limit plus 1.5 is dropped - which
+     silently removes 48 of the 110 Messiers, most of the galaxies among
+     them, and looks exactly like objects missing from the app rather than
+     a setting doing its job. In a mode for looking around, a galaxy at
+     magnitude 9.7 is still a thing that is there. */
+  magToDso: false
 };
 /* Bumped when the opening position changes, so a preset that was remembered
    from an older version does not quietly keep the old answer - see below. */
-var EXPLORE_PRESET_V = 2;
+var EXPLORE_PRESET_V = 3;
 /* Kept so there is a way back. Explore remembers what you change there, which
    is right for a preference and wrong for a mistake: one stray drag of the
    magnitude slider and there was nothing in the app that would undo it, because
@@ -7366,6 +7498,7 @@ function lsLevel(step, ab) {
 }
 
 var LearnStar = {
+  pool: 'ioaa',
   region: 'winter',
   ab: 'Ori',
   idx: 0,
@@ -7384,15 +7517,39 @@ var LearnStar = {
    of them still gets its alpha and beta, because "the brightest star in
    Sextans" is a fair question and its answer has to be somewhere. */
 var _lsPools = {};
+/* Which list you are working through.
+
+   'ioaa' is the syllabus: 101 stars over 37 constellations - everything
+   brighter than 2.21 plus the named extras the papers keep asking for.
+
+   'wide' is the same idea taken one magnitude further down: everything
+   brighter than 3.5, plus the three IOAA stars that are fainter than that and
+   would otherwise fall out of the list - Alcor at 3.99, Thuban at 3.67 and
+   Sheliak at 3.52. That comes to 291 stars over 60 constellations, which is
+   the whole of what a chart question can reasonably name. */
+var LS_POOLS = [
+  ['ioaa', 'The IOAA list', function (i) { return !!IOAA_SET[i]; }],
+  ['wide', 'Brighter than 3.5, plus the IOAA stars fainter than it',
+   function (i) { return STARS[i][2] <= 3.5 || !!IOAA_SET[i]; }]
+];
+
+function lsPoolDef() {
+  for (var i = 0; i < LS_POOLS.length; i++) {
+    if (LS_POOLS[i][0] === LearnStar.pool) return LS_POOLS[i];
+  }
+  return LS_POOLS[0];
+}
+
 function lsPool(ab) {
-  if (_lsPools[ab]) return _lsPools[ab];
+  var def = lsPoolDef(), key = def[0] + '|' + ab;
+  if (_lsPools[key]) return _lsPools[key];
   var out = [], seen = {}, k, rec, i;
   for (k = 0; k < NAMED.length; k++) {
     rec = NAMED[k]; i = rec.i;
     if (seen[i]) continue;
     if (CONS[STARS[i][4]][0] !== ab) continue;
     if (!(rec.n && rec.n.length) && !(rec.b && rec.b.length)) continue;
-    if (!IOAA_SET[i]) continue;
+    if (!def[2](i)) continue;
     seen[i] = 1; out.push(i);
   }
   if (!out.length) {
@@ -7409,8 +7566,39 @@ function lsPool(ab) {
     out = out.slice(0, 3);
   }
   out.sort(function (a, b) { return STARS[a][2] - STARS[b][2]; });
-  _lsPools[ab] = out;
+  _lsPools[key] = out;
   return out;
+}
+
+/* How big the chosen list is, for the picker - counted once.
+
+   Two numbers, because there are two honest answers. The list itself is what
+   the syllabus names: 101 stars over 37 constellations for the IOAA one. But
+   a constellation with nothing on the list is not left as an empty lesson -
+   it falls back to its three brightest lettered stars - so the number you
+   will actually work through is larger and covers all 88. Reporting only one
+   of those would be a lie in one direction or the other. */
+var _lsPoolSizes = {};
+function lsPoolSize(which) {
+  if (_lsPoolSizes[which]) return _lsPoolSizes[which];
+  var was = LearnStar.pool, listed = 0, total = 0, cons = {}, listedCons = {};
+  LearnStar.pool = which;
+  var def = lsPoolDef();
+  AT_REGIONS.forEach(function (r) {
+    r[2].forEach(function (ab) {
+      var pool = lsPool(ab);
+      if (!pool.length) return;
+      total += pool.length;
+      cons[ab] = 1;
+      pool.forEach(function (i) {
+        if (def[2](i)) { listed++; listedCons[ab] = 1; }
+      });
+    });
+  });
+  LearnStar.pool = was;
+  _lsPoolSizes[which] = { listed: listed, listedCons: Object.keys(listedCons).length,
+                          total: total, cons: Object.keys(cons).length };
+  return _lsPoolSizes[which];
 }
 
 /* The constellations of a region that have anything to teach, in the order the
@@ -7471,7 +7659,13 @@ LEARN_TOPICS.star = {
 
     stageHTML(
       '<h3>Learn</h3>' + learnTopicSelect() +
-      '<select id="lsRegion">' + AT_REGIONS.map(function (r) {
+      '<select id="lsPool">' + LS_POOLS.map(function (d) {
+        var n = lsPoolSize(d[0]);
+        return '<option value="' + d[0] + '"' + (d[0] === LearnStar.pool ? ' selected' : '') +
+               '>' + esc(d[1]) + ' — ' + n.listed + ' stars in ' + n.listedCons +
+               ' constellations, ' + n.total + ' counting the brightest of the rest</option>';
+      }).join('') + '</select>' +
+      '<select id="lsRegion" style="margin-top:6px">' + AT_REGIONS.map(function (r) {
         var d = lsRegionDone(r[0]);
         return '<option value="' + r[0] + '"' + (r[0] === LearnStar.region ? ' selected' : '') +
                '>' + r[1] + ' — ' + d[0] + '/' + d[1] + '</option>';
@@ -7499,6 +7693,15 @@ LEARN_TOPICS.star = {
     );
 
     bindLearnTopic();
+    el('lsPool').addEventListener('change', function () {
+      LearnStar.pool = this.value;
+      /* A constellation with stars in one list may have none in the other, so
+         land somewhere that exists rather than on an empty lesson. */
+      var cs = lsConsOf(LearnStar.region);
+      if (!cs.length) { LearnStar.region = AT_REGIONS[0][0]; cs = lsConsOf(LearnStar.region); }
+      if (cs.indexOf(LearnStar.ab) < 0) LearnStar.ab = cs[0];
+      LearnStar.idx = 0; Learn.step = 0; self.render();
+    });
     el('lsRegion').addEventListener('change', function () {
       LearnStar.region = this.value;
       LearnStar.ab = lsConsOf(this.value)[0];
