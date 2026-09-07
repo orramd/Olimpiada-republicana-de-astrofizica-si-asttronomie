@@ -7536,27 +7536,37 @@ var LearnStar = {
    of them still gets its alpha and beta, because "the brightest star in
    Sextans" is a fair question and its answer has to be somewhere. */
 var _lsPools = {};
-/* Which list you are working through. The two are nested, and that is the
-   whole design:
+/* Which list you are working through. The two are nested: the second is the
+   first plus more, never instead of.
 
-     core   what the topic has always taught - the IOAA list, and in a
-            constellation the IOAA list does not reach, its three brightest
-            lettered stars, so no constellation is an empty lesson.
+     core   the IOAA list. 101 stars, 37 constellations.
+     wide   those, and every star brighter than magnitude 3.5.
 
-     wide   all of that, and every star brighter than 3.5 on top.
+   Both used to pad: a constellation the IOAA list did not reach was given its
+   three brightest lettered stars so that no constellation was an empty lesson.
+   Counted up, that rule was teaching 100 stars fainter than 3.5 and 22 fainter
+   than 4.5 - beta Mensae at 5.30, beta Caeli at 5.04, one at 6.76. It produced
+   the giveaway that Caelum, whose brightest star is 4.44, had three stars to
+   learn while Auriga, which contains Capella, had two. Nobody needs the third
+   star of Caelum, and a list that asks for it is not a shorter list with some
+   noise in it - it is a list you stop trusting.
 
-   Nested, because the second is meant to be the first plus more, never
-   instead of. Built as two independent filters it was not: a constellation
-   whose brightest star is 3.2 kept three padded stars in the small list and
-   dropped to one in the large one, so moving up a level silently took stars
-   away - and with them the count of what you had done. A level you climb
-   should never subtract.
+   So the rule now is that a star earns its place: it is on the syllabus, or it
+   is bright enough to be asked about. A constellation with nothing that
+   qualifies simply is not in this topic - its shape is taught in the
+   constellations topic, which is the right place for it.
 
-   Progress is stored per star, not per list, so nothing you have already
-   worked through is lost or repeated when you switch. */
+   Progress is stored per star, not per list, so nothing already worked through
+   is lost - a star that has dropped out of both lists keeps its record, and
+   would bring it back with it. */
+/* "Relevant" is not "magnitude 3.5 and brighter" and must not be labelled as
+   though it were: it is the whole of the Most important list - which carries
+   stars fainter than 3.5, because a constellation the IOAA list does not reach
+   is taught by its own brightest, whatever those are - and everything brighter
+   than 3.5 on top. */
 var LS_POOLS = [
   ['core', 'Most important'],
-  ['wide', 'Relevant · mag ≤ 3.5']
+  ['wide', 'Relevant']
 ];
 
 function lsPoolDef() {
@@ -7566,7 +7576,7 @@ function lsPoolDef() {
   return LS_POOLS[0];
 }
 
-/* The list as it has always been: IOAA, padded where IOAA does not reach. */
+/* The syllabus, and only the syllabus. */
 function lsCorePool(ab) {
   var key = 'core|' + ab;
   if (_lsPools[key]) return _lsPools[key];
@@ -7578,17 +7588,6 @@ function lsCorePool(ab) {
     if (!(rec.n && rec.n.length) && !(rec.b && rec.b.length)) continue;
     if (!IOAA_SET[i]) continue;
     seen[i] = 1; out.push(i);
-  }
-  if (!out.length) {
-    for (k = 0; k < NAMED.length; k++) {
-      rec = NAMED[k]; i = rec.i;
-      if (seen[i]) continue;
-      if (CONS[STARS[i][4]][0] !== ab) continue;
-      if (!(rec.b && rec.b.length)) continue;
-      seen[i] = 1; out.push(i);
-    }
-    out.sort(function (a, b) { return STARS[a][2] - STARS[b][2]; });
-    out = out.slice(0, 3);
   }
   out.sort(function (a, b) { return STARS[a][2] - STARS[b][2]; });
   _lsPools[key] = out;
@@ -17192,13 +17191,44 @@ function paper61PointedControls() {
     '</select></div>';
 }
 
+/* Some objects are two things at once, and marking one of the two wrong is
+   marking the sky wrong.
+
+   M17 is an emission nebula with the open cluster NGC 6618 inside it; this
+   catalogue calls it a diffuse nebula and Stellarium calls it an open cluster,
+   and both are right. M16 is the reverse - catalogued here as the cluster
+   NGC 6611, known to everyone as the Eagle Nebula. A student who answers the
+   other half of the truth was being told they were wrong.
+
+   Only the star-forming complexes where the cluster carries its own NGC number
+   inside the nebula are listed here. The Pleiades are not: the reflection
+   nebulosity around them is real but nobody calls M45 a nebula. */
+var DSO_ALSO_TYPES = {
+  8:  ['Open Cluster'],          // Lagoon, with NGC 6530
+  16: ['Diffuse Nebula'],        // Eagle: the cluster NGC 6611 in IC 4703
+  17: ['Open Cluster'],          // Omega, with NGC 6618
+  20: ['Open Cluster'],          // Trifid, with its central cluster
+  24: ['Open Cluster']           // the star cloud carries NGC 6603
+};
+
+function dsoTypesAccepted(d) {
+  var out = [d.type];
+  var also = d && d.m ? DSO_ALSO_TYPES[d.m] : null;
+  if (also) out = out.concat(also);
+  return out;
+}
+
 function paper61CheckPointed(t) {
   var type = el('mkDsoType') ? el('mkDsoType').value : '';
   var con = el('mkDsoCon') ? el('mkDsoCon').value : '';
   if (!type || !con) return null;
+  var ok = dsoTypesAccepted(DSOS[t.dso]);
+  var both = ok.length > 1;
   return {
-    got: (type === t.type ? 1 : 0) + (con === t.con ? 1 : 0), want: 2,
-    detail: t.name + ' is a ' + t.type + ' in ' + conName(t.con) + '. '
+    got: (ok.indexOf(type) >= 0 ? 1 : 0) + (con === t.con ? 1 : 0), want: 2,
+    detail: t.name + ' is a ' + t.type + ' in ' + conName(t.con) + '. ' +
+      (both ? 'It is catalogued as ' + ok.join(' and ').toLowerCase() +
+              ' — either counts. ' : '')
   };
 }
 
