@@ -7498,7 +7498,7 @@ function lsLevel(step, ab) {
 }
 
 var LearnStar = {
-  pool: 'ioaa',
+  pool: 'core',
   region: 'winter',
   ab: 'Ori',
   idx: 0,
@@ -7517,20 +7517,27 @@ var LearnStar = {
    of them still gets its alpha and beta, because "the brightest star in
    Sextans" is a fair question and its answer has to be somewhere. */
 var _lsPools = {};
-/* Which list you are working through.
+/* Which list you are working through. The two are nested, and that is the
+   whole design:
 
-   'ioaa' is the syllabus: 101 stars over 37 constellations - everything
-   brighter than 2.21 plus the named extras the papers keep asking for.
+     core   what the topic has always taught - the IOAA list, and in a
+            constellation the IOAA list does not reach, its three brightest
+            lettered stars, so no constellation is an empty lesson.
 
-   'wide' is the same idea taken one magnitude further down: everything
-   brighter than 3.5, plus the three IOAA stars that are fainter than that and
-   would otherwise fall out of the list - Alcor at 3.99, Thuban at 3.67 and
-   Sheliak at 3.52. That comes to 291 stars over 60 constellations, which is
-   the whole of what a chart question can reasonably name. */
+     wide   all of that, and every star brighter than 3.5 on top.
+
+   Nested, because the second is meant to be the first plus more, never
+   instead of. Built as two independent filters it was not: a constellation
+   whose brightest star is 3.2 kept three padded stars in the small list and
+   dropped to one in the large one, so moving up a level silently took stars
+   away - and with them the count of what you had done. A level you climb
+   should never subtract.
+
+   Progress is stored per star, not per list, so nothing you have already
+   worked through is lost or repeated when you switch. */
 var LS_POOLS = [
-  ['ioaa', 'The IOAA list', function (i) { return !!IOAA_SET[i]; }],
-  ['wide', 'Brighter than 3.5, plus the IOAA stars fainter than it',
-   function (i) { return STARS[i][2] <= 3.5 || !!IOAA_SET[i]; }]
+  ['core', 'Most important — the IOAA list and the brightest of every constellation'],
+  ['wide', 'Relevant — those, and every star brighter than 3.5']
 ];
 
 function lsPoolDef() {
@@ -7540,8 +7547,9 @@ function lsPoolDef() {
   return LS_POOLS[0];
 }
 
-function lsPool(ab) {
-  var def = lsPoolDef(), key = def[0] + '|' + ab;
+/* The list as it has always been: IOAA, padded where IOAA does not reach. */
+function lsCorePool(ab) {
+  var key = 'core|' + ab;
   if (_lsPools[key]) return _lsPools[key];
   var out = [], seen = {}, k, rec, i;
   for (k = 0; k < NAMED.length; k++) {
@@ -7549,12 +7557,10 @@ function lsPool(ab) {
     if (seen[i]) continue;
     if (CONS[STARS[i][4]][0] !== ab) continue;
     if (!(rec.n && rec.n.length) && !(rec.b && rec.b.length)) continue;
-    if (!def[2](i)) continue;
+    if (!IOAA_SET[i]) continue;
     seen[i] = 1; out.push(i);
   }
   if (!out.length) {
-    /* Fall back to the two or three brightest lettered stars, so that no
-       constellation in the list is an empty lesson. */
     for (k = 0; k < NAMED.length; k++) {
       rec = NAMED[k]; i = rec.i;
       if (seen[i]) continue;
@@ -7570,34 +7576,45 @@ function lsPool(ab) {
   return out;
 }
 
-/* How big the chosen list is, for the picker - counted once.
+function lsPool(ab) {
+  var which = lsPoolDef()[0];
+  if (which === 'core') return lsCorePool(ab);
+  var key = 'wide|' + ab;
+  if (_lsPools[key]) return _lsPools[key];
+  /* Start from the core list itself, so every star it teaches is still here. */
+  var out = lsCorePool(ab).slice(), seen = {}, k, rec, i;
+  for (k = 0; k < out.length; k++) seen[out[k]] = 1;
+  for (k = 0; k < NAMED.length; k++) {
+    rec = NAMED[k]; i = rec.i;
+    if (seen[i]) continue;
+    if (CONS[STARS[i][4]][0] !== ab) continue;
+    if (!(rec.n && rec.n.length) && !(rec.b && rec.b.length)) continue;
+    if (STARS[i][2] > 3.5) continue;
+    seen[i] = 1; out.push(i);
+  }
+  out.sort(function (a, b) { return STARS[a][2] - STARS[b][2]; });
+  _lsPools[key] = out;
+  return out;
+}
 
-   Two numbers, because there are two honest answers. The list itself is what
-   the syllabus names: 101 stars over 37 constellations for the IOAA one. But
-   a constellation with nothing on the list is not left as an empty lesson -
-   it falls back to its three brightest lettered stars - so the number you
-   will actually work through is larger and covers all 88. Reporting only one
-   of those would be a lie in one direction or the other. */
+/* How big each list is, counted once: how many stars it holds, over how many
+   constellations, and how many of those are on the IOAA syllabus itself. */
 var _lsPoolSizes = {};
 function lsPoolSize(which) {
   if (_lsPoolSizes[which]) return _lsPoolSizes[which];
-  var was = LearnStar.pool, listed = 0, total = 0, cons = {}, listedCons = {};
+  var was = LearnStar.pool, total = 0, ioaa = 0, cons = {};
   LearnStar.pool = which;
-  var def = lsPoolDef();
   AT_REGIONS.forEach(function (r) {
     r[2].forEach(function (ab) {
       var pool = lsPool(ab);
       if (!pool.length) return;
       total += pool.length;
       cons[ab] = 1;
-      pool.forEach(function (i) {
-        if (def[2](i)) { listed++; listedCons[ab] = 1; }
-      });
+      pool.forEach(function (i) { if (IOAA_SET[i]) ioaa++; });
     });
   });
   LearnStar.pool = was;
-  _lsPoolSizes[which] = { listed: listed, listedCons: Object.keys(listedCons).length,
-                          total: total, cons: Object.keys(cons).length };
+  _lsPoolSizes[which] = { total: total, ioaa: ioaa, cons: Object.keys(cons).length };
   return _lsPoolSizes[which];
 }
 
@@ -7662,8 +7679,8 @@ LEARN_TOPICS.star = {
       '<select id="lsPool">' + LS_POOLS.map(function (d) {
         var n = lsPoolSize(d[0]);
         return '<option value="' + d[0] + '"' + (d[0] === LearnStar.pool ? ' selected' : '') +
-               '>' + esc(d[1]) + ' — ' + n.listed + ' stars in ' + n.listedCons +
-               ' constellations, ' + n.total + ' counting the brightest of the rest</option>';
+               '>' + esc(d[1]) + ' — ' + n.total + ' stars, ' + n.cons +
+               ' constellations (' + n.ioaa + ' on the IOAA list)</option>';
       }).join('') + '</select>' +
       '<select id="lsRegion" style="margin-top:6px">' + AT_REGIONS.map(function (r) {
         var d = lsRegionDone(r[0]);
