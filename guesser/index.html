@@ -3940,6 +3940,25 @@ function bindPointer() {
     if (e.key === 'r') { toolsToggleRuler(); return; }
     if (e.key === 'c') { toolsToggleCompass(); return; }
 
+    /* In Learn the arrows step through the objects, not the sky. Left and
+       right are previous and next - the star, the Messier, the constellation -
+       because that is the only thing you are moving through in there, and
+       reaching for the mouse between every answer is the slowest part of a
+       drill. Each topic already has its own buttons with their own bookkeeping,
+       so press those rather than reimplementing them. */
+    if (Modes.currentName === 'learn' && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      var LEARN_NAV = {
+        dso: ['lnPrev', 'lnNext'],
+        star: ['lsPrev', 'lsNext'],
+        con: ['lcPrev', 'lcNext'],
+        coord: ['lcoPrev', 'lcoNext'],
+        circles: ['lciPrev', 'lciNext']
+      };
+      var ids = LEARN_NAV[Learn.topic];
+      var btn = ids && el(ids[e.key === 'ArrowLeft' ? 0 : 1]);
+      if (btn) { btn.click(); e.preventDefault(); return; }
+    }
+
     var step = Sky.fov / 8;
     if (Sky.locked && mockChartActive() && /^Arrow/.test(e.key)) {
       /* Keyboard equivalent of dragging the sheet: screen x/y only, with no
@@ -7536,8 +7555,8 @@ var _lsPools = {};
    Progress is stored per star, not per list, so nothing you have already
    worked through is lost or repeated when you switch. */
 var LS_POOLS = [
-  ['core', 'Most important — the IOAA list and the brightest of every constellation'],
-  ['wide', 'Relevant — those, and every star brighter than 3.5']
+  ['core', 'Most important'],
+  ['wide', 'Relevant · mag ≤ 3.5']
 ];
 
 function lsPoolDef() {
@@ -7676,11 +7695,13 @@ LEARN_TOPICS.star = {
 
     stageHTML(
       '<h3>Learn</h3>' + learnTopicSelect() +
-      '<select id="lsPool">' + LS_POOLS.map(function (d) {
+      '<select id="lsPool" title="Most important: the IOAA list, and in a ' +
+      'constellation it does not reach, that constellation’s brightest. ' +
+      'Relevant: all of those, and every star brighter than magnitude 3.5.">' +
+      LS_POOLS.map(function (d) {
         var n = lsPoolSize(d[0]);
         return '<option value="' + d[0] + '"' + (d[0] === LearnStar.pool ? ' selected' : '') +
-               '>' + esc(d[1]) + ' — ' + n.total + ' stars, ' + n.cons +
-               ' constellations (' + n.ioaa + ' on the IOAA list)</option>';
+               '>' + esc(d[1]) + ' — ' + n.total + ' stars</option>';
       }).join('') + '</select>' +
       '<select id="lsRegion" style="margin-top:6px">' + AT_REGIONS.map(function (r) {
         var d = lsRegionDone(r[0]);
@@ -7732,10 +7753,7 @@ LEARN_TOPICS.star = {
         Learn.step = +seg.dataset.ltstep; LearnStar.answered = false; self.render();
       });
     });
-    el('lsPrev').addEventListener('click', function () {
-      LearnStar.idx = (LearnStar.idx - 1 + pool.length) % pool.length;
-      Learn.step = 0; self.render();
-    });
+    el('lsPrev').addEventListener('click', function () { self.nextStar(-1); });
     el('lsNext').addEventListener('click', function () { self.nextStar(); });
     el('lsCon2').addEventListener('click', function () {
       var c = lsConsOf(LearnStar.region), k = c.indexOf(LearnStar.ab);
@@ -7755,17 +7773,26 @@ LEARN_TOPICS.star = {
     });
   },
 
-  nextStar: function () {
-    var pool = lsPool(LearnStar.ab);
-    if (LearnStar.idx + 1 < pool.length) LearnStar.idx++;
+  /* The kind of sky is the test, not the star.
+
+     It used to climb: answer Saiph with the figure drawn, then Saiph with the
+     neighbours, then Saiph on a turned bare chart, and only then move on. That
+     drills one star four ways, which is not the thing being learned - what you
+     want is one kind of sky and star after star in it, the way the sky itself
+     asks. So moving to the next star keeps the level you are working at, and
+     the level is changed deliberately, from the bar or with "Harder sky". */
+  nextStar: function (dir) {
+    var pool = lsPool(LearnStar.ab), back = dir < 0;
+    if (!back && LearnStar.idx + 1 < pool.length) LearnStar.idx++;
+    else if (back && LearnStar.idx > 0) LearnStar.idx--;
     else {
-      /* Off the end of a constellation, move to the next one in the region -
+      /* Off either end of a constellation, move to the next one in the region -
          which is how you would actually learn a patch of sky. */
       var c = lsConsOf(LearnStar.region), k = c.indexOf(LearnStar.ab);
-      LearnStar.ab = c[(k + 1) % c.length];
-      LearnStar.idx = 0;
+      LearnStar.ab = c[(k + (back ? -1 : 1) + c.length) % c.length];
+      LearnStar.idx = back ? Math.max(0, lsPool(LearnStar.ab).length - 1) : 0;
     }
-    Learn.step = 0;
+    LearnStar.answered = false;
     this.render();
   },
 
@@ -7901,10 +7928,10 @@ LEARN_TOPICS.star = {
       (ok ? 'Right — ' : 'Not quite — ') + err.toFixed(1) + '° from ' + esc(lsTitle(si)) +
       '.</div>' +
       '<div class="btnrow">' +
+      '<button class="btn primary" id="lsAgain">' +
+      (ok ? 'Next star →' : 'Try again') + '</button>' +
       (ok && !last
-        ? '<button class="btn primary" id="lsAdv">Next level →</button>'
-        : '<button class="btn primary" id="lsAgain">' +
-          (ok ? 'Next star →' : 'Try again') + '</button>') +
+        ? '<button class="btn sm" id="lsAdv">Harder sky ⇑</button>' : '') +
       '<button class="btn sm" id="lsSkip">Next star</button></div>');
     if (el('lsAdv')) {
       el('lsAdv').addEventListener('click', function () {
