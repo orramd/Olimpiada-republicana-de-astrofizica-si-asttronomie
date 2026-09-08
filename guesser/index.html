@@ -2414,11 +2414,24 @@ function drawStars() {
      naked-eye, planetarium and telescope rounds alike, and it is asked by
      taking real stars out of the sky and leaving you to notice. */
   var hide = OPT.hideStar;
-  var hideList = OPT.hideStars;
+  /* hideList was read here and then never used, so "these stars have been
+     taken off the chart" took nothing off: the question named three stars,
+     hid their labels, and left the stars themselves plainly drawn. Only the
+     single-star form worked, which is why it went unnoticed - the exam's
+     "mark the missing star" is one star and did work.
+
+     An index lookup rather than indexOf per star: this runs for every star in
+     the catalogue on every frame. */
+  var hideList = null;
+  if (OPT.hideStars && OPT.hideStars.length) {
+    hideList = {};
+    for (i = 0; i < OPT.hideStars.length; i++) hideList[OPT.hideStars[i]] = 1;
+  }
   for (i = 0; i < n; i++) {
     var mag = STARS[i][2];
     if (mag > lim) continue;
     if (hide != null && i === hide) continue;      // exam: this one is the answer
+    if (hideList && hideList[i]) continue;         // and the paper's whole list
     var vx = SVX[i], vy = SVY[i], vz = SVZ[i];
     var Z = vx * c[0] + vy * c[1] + vz * c[2];
     if (Z < -0.4) continue;
@@ -8096,11 +8109,12 @@ var Exam = {
 };
 
 /* ---------------------------------------------------------------- pools */
-function examStarPool() {
+function examStarPool(syllabusOnly) {
   var out = [], seen = {};
   for (var i = 0; i < NAMED.length; i++) {
     var rec = NAMED[i], si = rec.i;
     if (seen[si] || STARS[si][2] > 3.5) continue;
+    if (syllabusOnly && !IOAA_SET[si]) continue;
     var hasName = rec.n && rec.n.length;
     var hasBayer = rec.b && rec.b.some(function (b) {
       return GREEK_BY_ABBR[b[0]] !== undefined;
@@ -8226,7 +8240,10 @@ function buildQuestion(kind) {
     return q;
   }
   if (kind === 'missing' || kind === 'whichmissing') {
-    var s = examStarPool();
+    /* A star taken off the chart has to be one you would miss. Drawn from the
+       whole magnitude-3.5 pool it was removing things like the fainter half of
+       Puppis, where the honest answer is that nobody could tell. */
+    var s = examStarPool(true);
     q.star = s[Math.floor(Math.random() * s.length)];
     q.ra = STARS[q.star][0]; q.dec = STARS[q.star][1];
     q.label = starPrompt(q.star);
@@ -16612,10 +16629,13 @@ function ptFmtHours(h) {
 /* ------------------------------------------------------- missing objects */
 /* Take `n` bright stars out of the chart. Chosen from what is comfortably up
    and bright enough to be missed - a chart with a 5th-magnitude star quietly
-   absent is not a question, it is a trick. */
+   absent is not a question, it is a trick - and from the syllabus, because
+   noticing that some star you have never been asked to learn is absent is not
+   a skill anyone is being examined on. */
 function paperMissingStars(lat, lst, n, maxMag) {
   var pool = [], i;
   for (i = 0; i < STARS.length; i++) {
+    if (!IOAA_SET[i]) continue;
     if (STARS[i][2] > (maxMag == null ? 2.2 : maxMag)) continue;
     if (!starRecordFor(i)) continue;
     if (ptRaDecToAltAz(STARS[i][0], STARS[i][1], lat, lst).alt < 20) continue;
