@@ -2312,29 +2312,66 @@ function gridRaInView(deg, v) {
   return Math.abs(d) <= (v.ra1 - v.ra0) / 2;
 }
 
+/* The grid is the most expensive thing on a chart that has one - four fifths
+   of the frame in the coordinates drill, which is the one place it is always
+   on. It was being built at full length whatever the view: every meridian ran
+   pole to pole as 61 points, every parallel right round the sky as 121, and
+   the equator always, so a thirty-degree field projected several thousand
+   points and threw nearly all of them away.
+
+   Whole lines outside the view were already skipped. This clips what is left
+   to the part that can be seen, which is where the work actually was. */
 function drawGrid() {
   var ctx = Sky.ctx, i, j, st = gridSteps(), v = gridVisibleRange();
   ctx.lineWidth = 1; ctx.setLineDash([]);
 
+  /* A little past the edge, so a line does not stop short of it. */
+  var dLo = Math.max(-90, Math.floor((v.d0 - 6) / 3) * 3);
+  var dHi = Math.min(90, Math.ceil((v.d1 + 6) / 3) * 3);
+  var raSpan = v.allRa ? null : (v.ra1 - v.ra0) / 2 + 6;
+
   for (i = 0; i < 1440; i += st.raMin) {                 // meridians
     if (!gridRaInView(i / 4, v)) continue;
     var pts = [];
-    for (j = -90; j <= 90; j += 3) pts.push([i / 4, j]);
+    for (j = dLo; j <= dHi; j += 3) pts.push([i / 4, j]);
+    if (pts.length < 2) continue;
     ctx.strokeStyle = (i % 60 === 0) ? '#243046' : '#1a2130';
     strokeRaDecPath(pts, false);
   }
+
+  /* A parallel is a circle of constant declination: only the arc of it that
+     is in front of you needs drawing. Near the pole that is the whole ring,
+     which is what allRa means. */
+  function parallel(dec) {
+    var pts = [], step = 3;
+    if (raSpan == null) {
+      for (var a = 0; a <= 360; a += step) pts.push([a, dec]);
+    } else {
+      var lo = Math.floor((Sky.ra - raSpan) / step) * step;
+      var hi = Math.ceil((Sky.ra + raSpan) / step) * step;
+      /* Left unwrapped on purpose: the path is walked in order, and folding
+         these back into 0-360 would send it the long way round the sky at
+         the seam. Projection takes a sine and a cosine, which do not care
+         that the angle is 372 degrees. */
+      for (var b = lo; b <= hi; b += step) pts.push([b, dec]);
+    }
+    return pts;
+  }
+
   for (i = -90 + st.dec; i <= 90 - st.dec; i += st.dec) { // parallels
     if (i === 0) continue;
     if (i < v.d0 || i > v.d1) continue;
-    var pts2 = [];
-    for (j = 0; j <= 360; j += 3) pts2.push([j, i]);
+    var pts2 = parallel(i);
+    if (pts2.length < 2) continue;
     ctx.strokeStyle = (i % 30 === 0) ? '#243046' : '#1a2130';
     strokeRaDecPath(pts2, false);
   }
-  ctx.strokeStyle = '#2a3549'; ctx.lineWidth = 1.2;
-  var eq = [];
-  for (j = 0; j <= 360; j += 3) eq.push([j, 0]);
-  strokeRaDecPath(eq, false);
+
+  if (v.d0 <= 0 && v.d1 >= 0) {
+    ctx.strokeStyle = '#2a3549'; ctx.lineWidth = 1.2;
+    var eq = parallel(0);
+    if (eq.length > 1) strokeRaDecPath(eq, false);
+  }
 
   if (OPT.gridLabels !== false) drawGridLabels(st);
 }
@@ -3109,8 +3146,15 @@ function hitTest(px, py) {
 
 /* -------------------------------------------------------------- camera */
 var flyAnim = null;
+/* Stepping through a list with the arrow keys starts one of these on every
+   press, and a held key repeats about thirty times a second. At the full
+   620 ms each new fly restarts the glide from wherever the last one had got
+   to, so the view never arrives and every frame in between is a full redraw -
+   which is what made the coordinates drill crawl while an arrow was held.
+   A fly that interrupts another one is someone moving fast: take them there
+   quickly instead of pretending they wanted the scenery. */
 function flyTo(ra, dec, fov, ms) {
-  var t0 = performance.now(), dur = ms == null ? 620 : ms;
+  var t0 = performance.now(), dur = ms == null ? (flyAnim ? 130 : 620) : ms;
   var a0 = toVec(Sky.ra, Sky.dec), a1 = toVec(ra, dec);
   var f0 = Sky.fov, f1 = fov == null ? Sky.fov : fov;
   flyAnim = function (now) {
