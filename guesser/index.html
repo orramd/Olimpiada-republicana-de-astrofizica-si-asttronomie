@@ -1049,8 +1049,19 @@ function authSetPassword(accessToken, password) {
   }).then(function (r) {
     return r.json().then(function (j) {
       if (!r.ok) {
-        var msg = (j && (j.msg || j.error_description || j.message)) ||
-                  'That link has expired — ask for another.';
+        var raw = (j && (j.msg || j.error_description || j.message)) || '';
+        /* Supabase answers a dead link with "invalid JWT: unable to parse or
+           verify signature, token is malformed", which tells a student
+           nothing at all about what to do next. */
+        var msg = 'That link did not work — ask for a new one.';
+        if (/jwt|token|expired|invalid/i.test(raw)) {
+          msg = 'That link has expired or has already been used. Ask for a ' +
+                'new one — they last about an hour.';
+        } else if (/password/i.test(raw)) {
+          msg = 'That password was refused: ' + raw;
+        } else if (raw) {
+          msg = raw;
+        }
         throw new Error(msg);
       }
       return j;
@@ -1263,10 +1274,16 @@ function authGate(message) {
 /* Called by the boot sequence. Resolves when the app may start. */
 function authStart() {
   Auth.required = authRequired();
-  if (!Auth.required) return Promise.resolve();
 
-  /* Arriving from a reset link. Deal with it before anything else, and take
-     the token out of the address bar either way. */
+  /* A reset link is handled wherever it lands, host or not.
+
+     It has to be, because where it lands is not this app's decision: the link
+     goes to whatever Site URL the Supabase project has, and a project that
+     still has the default one sends every reset to localhost:3000. The token
+     in that link is perfectly good - only the address is wrong. So any copy of
+     this page that sees a recovery fragment finishes the reset, which means a
+     dead link can be rescued by pasting its fragment onto a copy that runs,
+     including the live site. */
   var hash = authHashParams();
   if (hash) {
     authClearHash();
@@ -1274,12 +1291,15 @@ function authStart() {
       Auth.session = { access_token: hash.access_token,
                        refresh_token: hash.refresh_token,
                        expires_at: Date.now() + 3600000 };
-      return authRecoveryGate(hash).then(authRefresh).then(authPull);
+      var done = authRecoveryGate(hash);
+      return Auth.required ? done.then(authRefresh).then(authPull) : done;
     }
-    if (hash.error_description) {
+    if (hash.error_description && Auth.required) {
       return authGate(hash.error_description).then(authPull);
     }
   }
+
+  if (!Auth.required) return Promise.resolve();
 
   Auth.session = authLoadSession();
   if (!Auth.session) return authGate().then(authPull);
