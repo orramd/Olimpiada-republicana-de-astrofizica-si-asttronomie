@@ -300,5 +300,17 @@
         <a href="tel:+37379630435">+373 79 630 435</a>
       </div>
     </footer>
+    <!-- Password-reset links from Supabase arrive at the site root, because
+         that is the project's Site URL. The app that can use them lives at
+         /guesser/, so a token landing here would simply be lost. Forward it,
+         fragment intact, and touch nothing else on this page: this runs only
+         when the URL carries a Supabase auth fragment. -->
+    <script>
+      (function __authBounce() {
+        var h = location.hash || '';
+        if (!/(^|[#&])(access_token=|error_code=|type=recovery)/.test(h)) return;
+        location.replace('/guesser/' + h);
+      })();
+    </script>
   </body>
 </html>
