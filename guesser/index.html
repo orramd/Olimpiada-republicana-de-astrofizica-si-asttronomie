@@ -5959,6 +5959,7 @@ var LEARN_TOPICS = {};
 var LEARN_TOPIC_NAMES = [['dso', 'Deep-sky objects'], ['star', 'Stars, constellation by constellation'],
                          ['con', 'Constellations'],
                          ['coord', 'Star coordinates'], ['circles', 'Great circles'],
+                         ['lists', 'Variable and multiple stars'],
                          ['mistakes', 'What you keep getting wrong']];
 
 function learnTopicSelect() {
@@ -8353,6 +8354,9 @@ function examStarPool(syllabusOnly) {
        was dropping the three syllabus stars fainter than that. */
     if (seen[si] || !starRelevant(si)) continue;
     if (syllabusOnly && !IOAA_SET[si]) continue;
+    /* syllabusOnly is the missing-star questions, and a star that shares its
+       spot with its own twin cannot be the answer to one. */
+    if (syllabusOnly && typeof STAR_HAS_TWIN !== 'undefined' && STAR_HAS_TWIN[si]) continue;
     var hasName = rec.n && rec.n.length;
     var hasBayer = rec.b && rec.b.some(function (b) {
       return GREEK_BY_ABBR[b[0]] !== undefined;
@@ -16874,6 +16878,9 @@ function paperMissingStars(lat, lst, n, maxMag) {
   var pool = [], i;
   for (i = 0; i < STARS.length; i++) {
     if (!IOAA_SET[i]) continue;
+    /* Never one half of a pair that shares its place with the other half -
+       see STAR_HAS_TWIN. */
+    if (typeof STAR_HAS_TWIN !== 'undefined' && STAR_HAS_TWIN[i]) continue;
     if (STARS[i][2] > (maxMag == null ? 2.2 : maxMag)) continue;
     if (!starRecordFor(i)) continue;
     if (ptRaDecToAltAz(STARS[i][0], STARS[i][1], lat, lst).alt < 20) continue;
@@ -19371,10 +19378,41 @@ var DOUBLE_UNRESOLVED = [];
 
    Matched on both separation and brightness, because position alone would
    pick up an unrelated field star: within twice the published separation, and
-   within 1.2 magnitudes of the published companion. */
+   within 1.2 magnitudes of the published companion.
+
+   That test alone was not enough, and alpha Centauri is why. Its published
+   separation is 4.9 arcseconds - the pair's separation moves between about 2
+   and 22 as the eighty-year orbit turns - while the two catalogue entries sit
+   15.5 arcseconds apart, being fixed positions for a given epoch. Twice 4.9 is
+   9.8, so the match failed, the app decided the catalogue had no alpha Cen B,
+   and drew one. The result was three stars where the sky has two, with the
+   invented one in a position derived from an index rather than from the sky.
+
+   So look at the designation first. alpha-1 and alpha-2 Centauri are the same
+   system by name, whatever their coordinates say this epoch, and that is true
+   of every numbered Bayer pair - epsilon-1 and epsilon-2 Lyrae, alpha-1 and
+   alpha-2 Capricorni. Position and brightness stay as the fallback. */
+function doubleBayerTwin(idx) {
+  var rec = NAMED_BY_STAR[idx];
+  if (!rec || !rec.b || !rec.b.length) return -1;
+  var b = rec.b[0];
+  if (!b || b.length < 3 || !b[1]) return -1;      // no superscript number
+  var letter = b[0], num = b[1], con = b[2];
+  for (var i = 0; i < STARS.length; i++) {
+    if (i === idx) continue;
+    var r2 = NAMED_BY_STAR[i];
+    if (!r2 || !r2.b || !r2.b.length) continue;
+    var c = r2.b[0];
+    if (c && c[0] === letter && c[2] === con && c[1] && c[1] !== num) return i;
+  }
+  return -1;
+}
+
 (function () {
   DOUBLES.forEach(function (d) {
     if (d.sep == null || d.magB == null) return;
+    var twin = doubleBayerTwin(d.idx);
+    if (twin >= 0) { d.companion = twin; return; }
     var tol = Math.max(5, d.sep * 2) / 3600, best = -1, bd = 1e9;
     for (var i = 0; i < STARS.length; i++) {
       if (i === d.idx) continue;
@@ -19385,6 +19423,26 @@ var DOUBLE_UNRESOLVED = [];
     }
     d.companion = best;
   });
+})();
+
+/* Stars that share their place on the chart with another catalogue star.
+
+   Taking one of these off a chart is not a question anyone can answer: alpha-1
+   and alpha-2 Centauri are both labelled "alpha Cen" and sit fifteen
+   arcseconds apart, so "which star is missing?" has two identical-looking
+   answers and no way to tell which one went. Built once, from the catalogue
+   itself rather than from a list of names, so it covers every such pair. */
+var STAR_HAS_TWIN = (function () {
+  var out = {}, i, j;
+  var LIMIT = 60 / 3600;                     // one arcminute
+  for (i = 0; i < DOUBLES.length; i++) {
+    var d = DOUBLES[i];
+    if (d.companion == null || d.companion < 0) continue;
+    var apart = sepDeg(STARS[d.idx][0], STARS[d.idx][1],
+                       STARS[d.companion][0], STARS[d.companion][1]);
+    if (apart <= LIMIT) { out[d.idx] = 1; out[d.companion] = 1; }
+  }
+  return out;
 })();
 
 /* Systems where each half of the wide pair is itself a pair.
@@ -21280,6 +21338,118 @@ function variableChecks() {
   };
 })();
 
+/* ---- js/72-learn-lists.js ---- */
+/* ==========================================================================
+   Learn: the lists.
+
+   The variable stars and the multiple stars are the two parts of the syllabus
+   that are memorised as tables rather than found on a chart: which star varies,
+   what kind of variable it is, how far it swings and how long it takes; which
+   pairs are bound and which merely line up, how far apart they sit and whether
+   a 150 mm splits them. The app already holds all of it - the drills are built
+   from these very rows - but there was nowhere to simply read them.
+
+   So: read them. Sorted the way you would revise them, with the separation
+   verdict computed from the same Dawes limit the telescope uses rather than
+   copied into prose, and every row clickable to go and look at the thing.
+   ========================================================================== */
+'use strict';
+
+function llFmtPeriod(p) {
+  if (p == null) return '—';
+  if (p >= 100) return Math.round(p) + ' d';
+  if (p >= 10) return p.toFixed(1) + ' d';
+  return p.toFixed(3) + ' d';
+}
+
+function llSplitVerdict(sep) {
+  if (sep == null) return '—';
+  if (typeof doubleSplitVerdict === 'function') {
+    var v = doubleSplitVerdict(sep, SCOPE.aperture);
+    if (v && typeof v.splits === 'boolean') {
+      return v.splits ? 'splits' : 'too close';
+    }
+  }
+  return sep >= 116 / SCOPE.aperture ? 'splits' : 'too close';
+}
+
+function llNakedEye(sep) {
+  /* The eye resolves about an arcminute at best, so anything wider than that
+     is a pair you can separate without help - Mizar and Alcor being the one
+     everybody is asked about. */
+  return sep != null && sep >= 60 ? 'naked eye' : '';
+}
+
+LEARN_TOPICS.lists = {
+  render: function () {
+    var self = this;
+    /* Nothing is being asked here, so nothing is hidden: the sky keeps
+       whatever the settings say. */
+    Modes.override = null;
+
+    var vars = VARIABLES.slice().sort(function (a, b) {
+      var t = VARIABLE_TYPES.indexOf(a.type) - VARIABLE_TYPES.indexOf(b.type);
+      return t !== 0 ? t : a.bright - b.bright;
+    });
+    var pairs = DOUBLES.slice().sort(function (a, b) {
+      if (a.kind !== b.kind) return a.kind === 'binary' ? -1 : 1;
+      return (a.sep == null ? 1e9 : a.sep) - (b.sep == null ? 1e9 : b.sep);
+    });
+
+    var varRows = vars.map(function (v, k) {
+      return '<div class="it" data-star="' + v.idx + '">' +
+        '<span class="nm">' + esc(starPrompt(v.idx) || v.name) + '</span>' +
+        '<span class="st">' + esc(v.type) + ' · ' +
+        v.bright.toFixed(1) + '–' + v.faint.toFixed(1) + ' · ' +
+        llFmtPeriod(v.period) + '</span></div>';
+    }).join('');
+
+    var pairRows = pairs.map(function (d) {
+      var sep = d.sep == null ? '—' : (d.sep >= 60
+        ? (d.sep / 60).toFixed(1) + '′' : d.sep + '″');
+      var note = [llSplitVerdict(d.sep), llNakedEye(d.sep)]
+        .filter(function (x) { return x; }).join(' · ');
+      return '<div class="it" data-star="' + d.idx + '">' +
+        '<span class="nm">' + esc(d.name) + ' <span class="note">' + esc(d.con) +
+        '</span></span>' +
+        '<span class="st">' + esc(d.kind) + ' · ' + sep + ' · ' +
+        d.magA.toFixed(1) + '/' + d.magB.toFixed(1) + ' · ' + note + '</span></div>';
+    }).join('');
+
+    stageHTML(
+      '<h3>Learn</h3>' + learnTopicSelect() +
+      '<div class="note">The two tables the syllabus asks you to know by heart. ' +
+      'Click any row to go and look at it.</div>' +
+
+      '<h2>Variable stars <span class="note">' + vars.length + '</span></h2>' +
+      '<div class="note">Type · range in magnitudes · period.</div>' +
+      '<div class="list" id="llVars">' + varRows + '</div>' +
+
+      '<h2>Multiple stars <span class="note">' + pairs.length + '</span></h2>' +
+      '<div class="note">Bound or optical · separation · the two magnitudes · ' +
+      'whether the ' + SCOPE.aperture + ' mm splits it, by Dawes.</div>' +
+      '<div class="list" id="llPairs">' + pairRows + '</div>'
+    );
+
+    bindLearnTopic();
+    ['llVars', 'llPairs'].forEach(function (id) {
+      qsAll(id, '.it').forEach(function (node) {
+        node.addEventListener('click', function () {
+          var i = +node.getAttribute('data-star');
+          if (!STARS[i]) return;
+          flyTo(STARS[i][0], STARS[i][1], Math.min(Sky.fov, 12));
+          Sky.overlays = [{ t: 'target', ra: STARS[i][0], dec: STARS[i][1] }];
+          Sky.needsDraw = true;
+          if (typeof showInspector === 'function') {
+            showInspector({ type: 'star', idx: i });
+          }
+        });
+      });
+    });
+    Sky.needsDraw = true;
+  }
+};
+
 /* ---- what the shared engine reads by name ---- */
 window.persist = persist;
 window.drawToolsOverlay = drawToolsOverlay;
@@ -21325,6 +21495,7 @@ window.SGP = {
   paper61SmallCircleTasks: paper61SmallCircleTasks,
   paper61ChartPlanets: paper61ChartPlanets,
   /* One definition of "which stars", checkable from outside. */
+  STAR_HAS_TWIN: STAR_HAS_TWIN, doubleBayerTwin: doubleBayerTwin,
   starRelevant: starRelevant, STAR_CATS: STAR_CATS, starCatFn: starCatFn,
   authScreenHTML: function () { return authScreenHTML(''); },
   authResetScreenHTML: authResetScreenHTML, authHashParams: authHashParams,
