@@ -994,6 +994,70 @@ function authFresh() {
   return authRefresh();
 }
 
+/* Ask Supabase to send a reset link.
+
+   The link it sends lands on the project's Site URL with the recovery token in
+   the fragment, which is why a reset was arriving at localhost:3000 and dying
+   there: that is the default Site URL of a new project and nobody had changed
+   it. Passing redirect_to says where it should land instead - it still has to
+   be on the project's allow-list, but it means the app asks for the right
+   place rather than depending on one dashboard field being right. */
+function authRecoverUrl() {
+  return location.origin + location.pathname;
+}
+
+function authSendReset(email) {
+  return authFetch('/auth/v1/recover', {
+    method: 'POST', auth: false,
+    body: { email: email, redirect_to: authRecoverUrl() }
+  }).then(function (r) {
+    /* Supabase answers 200 whether or not the address has an account, on
+       purpose - otherwise the form tells a stranger who has one. */
+    if (!r.ok && r.status !== 422) throw new Error('Could not send the email.');
+    return true;
+  });
+}
+
+/* The link comes back as .../guesser/#access_token=...&type=recovery, so the
+   token is in the fragment. Read it, then take it out of the address bar: a
+   recovery token is a way into the account and has no business sitting in the
+   URL, the history, or a screenshot. */
+function authHashParams() {
+  var h = (location.hash || '').replace(/^#/, '');
+  if (!h) return null;
+  var out = {}, parts = h.split('&'), i;
+  for (i = 0; i < parts.length; i++) {
+    var kv = parts[i].split('=');
+    if (kv.length === 2) out[decodeURIComponent(kv[0])] = decodeURIComponent(kv[1]);
+  }
+  return (out.access_token || out.error_description) ? out : null;
+}
+
+function authClearHash() {
+  try {
+    history.replaceState(null, '', location.pathname + location.search);
+  } catch (e) { location.hash = ''; }
+}
+
+/* Set a new password using the token from the link. */
+function authSetPassword(accessToken, password) {
+  return fetch(AUTH.url + '/auth/v1/user', {
+    method: 'PUT',
+    headers: { apikey: AUTH.key, 'Content-Type': 'application/json',
+               Authorization: 'Bearer ' + accessToken },
+    body: JSON.stringify({ password: password })
+  }).then(function (r) {
+    return r.json().then(function (j) {
+      if (!r.ok) {
+        var msg = (j && (j.msg || j.error_description || j.message)) ||
+                  'That link has expired — ask for another.';
+        throw new Error(msg);
+      }
+      return j;
+    });
+  });
+}
+
 function authSignOut() {
   authFetch('/auth/v1/logout', { method: 'POST' }).catch(function () {});
   authStore(null);
@@ -1090,22 +1154,92 @@ function authScreenHTML(message) {
     'background:#ffc14d;color:#1a1206;font-weight:600;font-size:15px;cursor:pointer">Sign in</button>' +
     '<div id="authMsg" style="min-height:19px;font-size:13px;color:#ff9a8a">' +
     (message ? esc(message) : '') + '</div>' +
+    '<button id="authForgot" type="button" style="background:none;border:0;padding:0;' +
+    'color:#8b95a8;font-size:13px;text-align:left;cursor:pointer;text-decoration:underline">' +
+    'Forgot your password?</button>' +
     '<div style="color:#5d6879;font-size:12px;line-height:1.45">' +
     'Accounts are made by hand. If you do not have one, ask — you cannot create ' +
     'one here.</div>' +
     '</form></div>';
 }
 
+/* The screen you get from the link in the email. */
+function authResetScreenHTML() {
+  return '' +
+    '<div id="authGate" style="position:fixed;inset:0;z-index:9999;display:flex;' +
+    'align-items:center;justify-content:center;background:#05060a;' +
+    'font:15px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif;color:#c8cfdd">' +
+    '<form id="authNewForm" style="width:min(92vw,340px);display:flex;flex-direction:column;gap:10px">' +
+    '<div style="font:600 22px/1.2 ui-sans-serif,system-ui,sans-serif;color:#e9edf7">' +
+    'Choose a new password</div>' +
+    '<input id="authNew" type="password" autocomplete="new-password" placeholder="new password" ' +
+    'style="padding:10px 12px;border-radius:8px;border:1px solid #2b3346;background:#0c1018;' +
+    'color:#e9edf7;font-size:15px">' +
+    '<input id="authNew2" type="password" autocomplete="new-password" placeholder="again" ' +
+    'style="padding:10px 12px;border-radius:8px;border:1px solid #2b3346;background:#0c1018;' +
+    'color:#e9edf7;font-size:15px">' +
+    '<button id="authNewGo" type="submit" style="padding:10px 12px;border-radius:8px;border:0;' +
+    'background:#ffc14d;color:#1a1206;font-weight:600;font-size:15px;cursor:pointer">Save it</button>' +
+    '<div id="authNewMsg" style="min-height:19px;font-size:13px;color:#ff9a8a"></div>' +
+    '</form></div>';
+}
+
+/* Resolves once the password is changed and the session is good. */
+function authRecoveryGate(hash) {
+  return new Promise(function (resolve, reject) {
+    var wrap = document.createElement('div');
+    wrap.innerHTML = authResetScreenHTML();
+    document.body.appendChild(wrap.firstChild);
+    var form = el('authNewForm'), msg = el('authNewMsg'), go = el('authNewGo');
+    el('authNew').focus();
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var a = el('authNew').value || '', b = el('authNew2').value || '';
+      if (a.length < 8) { msg.textContent = 'At least eight characters.'; return; }
+      if (a !== b) { msg.textContent = 'The two do not match.'; return; }
+      go.disabled = true; go.textContent = 'Saving…';
+      msg.textContent = '';
+      authSetPassword(hash.access_token, a).then(function () {
+        /* The recovery link signs you in as well, so keep the session it came
+           with rather than making you type the new password immediately. */
+        authStore({ access_token: hash.access_token,
+                    refresh_token: hash.refresh_token,
+                    expires_at: Date.now() + 3600000,
+                    user: Auth.session && Auth.session.user });
+        var gate = el('authGate');
+        if (gate) gate.remove();
+        resolve();
+      }).catch(function (err) {
+        go.disabled = false; go.textContent = 'Save it';
+        msg.textContent = err && err.message ? err.message : 'That did not work.';
+      });
+    });
+  });
+}
+
 /* Resolves once there is a session, or never, because there is nothing to
    show until there is one. */
-function authGate() {
+function authGate(message) {
   return new Promise(function (resolve) {
     var wrap = document.createElement('div');
-    wrap.innerHTML = authScreenHTML('');
+    wrap.innerHTML = authScreenHTML(message || '');
     document.body.appendChild(wrap.firstChild);
 
     var form = el('authForm'), msg = el('authMsg'), go = el('authGo');
     el('authEmail').focus();
+
+    el('authForgot').addEventListener('click', function () {
+      var email = (el('authEmail').value || '').trim();
+      if (!email) { msg.style.color = '#ff9a8a'; msg.textContent = 'Your email first.'; return; }
+      msg.style.color = '#8b95a8';
+      msg.textContent = 'Sending…';
+      authSendReset(email).then(function () {
+        msg.textContent = 'If that address has an account, a link is on its way.';
+      }).catch(function () {
+        msg.style.color = '#ff9a8a';
+        msg.textContent = 'Could not send it. Try again in a minute.';
+      });
+    });
 
     form.addEventListener('submit', function (e) {
       e.preventDefault();
@@ -1130,6 +1264,22 @@ function authGate() {
 function authStart() {
   Auth.required = authRequired();
   if (!Auth.required) return Promise.resolve();
+
+  /* Arriving from a reset link. Deal with it before anything else, and take
+     the token out of the address bar either way. */
+  var hash = authHashParams();
+  if (hash) {
+    authClearHash();
+    if (hash.access_token && hash.type === 'recovery') {
+      Auth.session = { access_token: hash.access_token,
+                       refresh_token: hash.refresh_token,
+                       expires_at: Date.now() + 3600000 };
+      return authRecoveryGate(hash).then(authRefresh).then(authPull);
+    }
+    if (hash.error_description) {
+      return authGate(hash.error_description).then(authPull);
+    }
+  }
 
   Auth.session = authLoadSession();
   if (!Auth.session) return authGate().then(authPull);
@@ -2877,7 +3027,43 @@ function drawOverlays() {
   });
 }
 
-/* -------------------------------------------------------------- hit testing */
+/* -------------------------------------------------------------- hit testing
+
+   Everything under the cursor, nearest and brightest first.
+
+   One hit was not enough. Alpha Centauri A and B are 15 arcseconds apart: at
+   any field wider than about two degrees they are the same pixel, and the
+   brighter one answered every click, so B could not be selected at all
+   without zooming in until the pair split. The same goes for Mizar and Alcor,
+   for epsilon Lyrae, and for anything else worth looking at twice. So the
+   click returns the whole stack and the caller steps through it. */
+function hitTestAll(px, py) {
+  var hits = [], i;
+  for (i = 0; i < visibleDsos.length; i += 4) {
+    var dx = visibleDsos[i + 1] - px, dy = visibleDsos[i + 2] - py;
+    var d2 = dx * dx + dy * dy;
+    if (d2 < visibleDsos[i + 3] * visibleDsos[i + 3]) {
+      hits.push({ type: 'dso', idx: visibleDsos[i], score: d2 });
+    }
+  }
+  for (i = 0; i < visibleStars.length; i += 4) {
+    var ex = visibleStars[i + 1] - px, ey = visibleStars[i + 2] - py;
+    var e2 = ex * ex + ey * ey;
+    var rr = visibleStars[i + 3] + 4;
+    if (e2 < rr * rr) {
+      /* Brighter first when two overlap, which is the one you usually mean. */
+      hits.push({ type: 'star', idx: visibleStars[i],
+                  score: e2 + STARS[visibleStars[i]][2] * 9 });
+    }
+  }
+  /* Deep-sky objects keep their old priority over stars underneath them. */
+  hits.sort(function (a, b) {
+    if ((a.type === 'dso') !== (b.type === 'dso')) return a.type === 'dso' ? -1 : 1;
+    return a.score - b.score;
+  });
+  return hits;
+}
+
 function hitTest(px, py) {
   var bi = -1, bd = 1e9, i;
   for (i = 0; i < visibleDsos.length; i += 4) {
@@ -3843,7 +4029,18 @@ function bindPointer() {
     if (toolsPointClick(e.clientX, e.clientY)) return;
     if (toolsRulerClick(e.clientX, e.clientY)) return;
     var rd = unproject(e.clientX, e.clientY);
-    var hit = hitTest(e.clientX, e.clientY);
+    /* Click the same spot again to reach whatever is underneath - the second
+       star of a close pair, or the star behind a cluster's symbol. Moving the
+       cursor more than a few pixels starts a fresh stack. */
+    var hits = hitTestAll(e.clientX, e.clientY);
+    if (Sky._hitAt && Math.abs(Sky._hitAt[0] - e.clientX) <= 6 &&
+        Math.abs(Sky._hitAt[1] - e.clientY) <= 6 && hits.length > 1) {
+      Sky._hitTurn = (Sky._hitTurn + 1) % hits.length;
+    } else {
+      Sky._hitTurn = 0;
+    }
+    Sky._hitAt = [e.clientX, e.clientY];
+    var hit = hits.length ? hits[Sky._hitTurn % hits.length] : null;
     if (Modes.current && Modes.current.onClick && Modes.current.onClick(rd, hit)) return;
     if (hit) {
       showInspector(hit);
@@ -5566,16 +5763,33 @@ var IOAA_SET = (function () {
   return set;
 })();
 
+/* The set of stars worth knowing, defined once.
+
+   Every part of the app that offers a choice of stars was drawing its own
+   line: Learn had "the IOAA list plus everything brighter than 3.5", Identify
+   and the star quiz had a plain "brighter than 3.5", and the exam had its own
+   copy of the second. They are nearly the same set and the differences were
+   accidental - the plain magnitude cut quietly drops Alcor, Thuban and
+   Sheliak, which are on the syllabus precisely because they get asked about.
+
+   So: relevant means on the syllabus, or bright enough to be asked about.
+   One predicate, used wherever the question is "which stars?". */
+function starRelevant(i) {
+  return !!IOAA_SET[i] || STARS[i][2] <= 3.5;
+}
+
 var STAR_CATS = [
   ['b15', 'Brighter than 1.5', function (i) {
     var r = NAMED_BY_STAR[i];
     return STARS[i][2] <= 1.5 && r && (r.n || r.b || r.f);
   }],
   ['ioaa', 'IOAA level', function (i) { return !!IOAA_SET[i]; }],
-  ['b35', 'Brighter than 3.5', function (i) { return STARS[i][2] <= 3.5; }]
+  ['relevant', 'Relevant', starRelevant]
 ];
 function starCatFn(id) {
   var f = STAR_CATS.filter(function (c) { return c[0] === id; })[0];
+  /* 'b35' is what this last set used to be called; a stored preference from
+     before the rename lands here and gets the set that replaced it. */
   return f ? f[2] : STAR_CATS[2][2];
 }
 function starPool(catId) {
@@ -6032,7 +6246,7 @@ Modes.defs.learn = {
    ========================================================================== */
 'use strict';
 
-var StarQuiz = { cat: 'b35', cur: -1, answered: false, started: false, startedAt: 0 };
+var StarQuiz = { cat: 'relevant', cur: -1, answered: false, started: false, startedAt: 0 };
 
 Modes.defs.star = {
   start: function () { StarQuiz.cur = -1; StarQuiz.started = false; this.render(); },
@@ -6210,7 +6424,7 @@ function askable(d, mode) {
 var Locate = {
   what: 'dso',            // 'dso' | 'star'
   level: 'medium',        // see DIFFICULTY in 40-modes.js
-  scope: 'm-most', starCat: 'b35', askBy: 'auto',
+  scope: 'm-most', starCat: 'relevant', askBy: 'auto',
   cur: -1, answered: false, showLines: true, started: false, startedAt: 0
 };
 
@@ -7553,7 +7767,9 @@ var _lsPools = {};
    first plus more, never instead of.
 
      core   the IOAA list. 101 stars, 37 constellations.
-     wide   those, and every star brighter than magnitude 3.5.
+     wide   the Relevant set - the syllabus, and everything brighter than
+            magnitude 3.5 - which is the same set Identify, the star quiz and
+            the exam draw from, defined once in starRelevant().
 
    Both used to pad: a constellation the IOAA list did not reach was given its
    three brightest lettered stars so that no constellation was an empty lesson.
@@ -7620,7 +7836,7 @@ function lsPool(ab) {
     if (seen[i]) continue;
     if (CONS[STARS[i][4]][0] !== ab) continue;
     if (!(rec.n && rec.n.length) && !(rec.b && rec.b.length)) continue;
-    if (STARS[i][2] > 3.5) continue;
+    if (!starRelevant(i)) continue;          // the shared definition
     seen[i] = 1; out.push(i);
   }
   out.sort(function (a, b) { return STARS[a][2] - STARS[b][2]; });
@@ -8113,7 +8329,9 @@ function examStarPool(syllabusOnly) {
   var out = [], seen = {};
   for (var i = 0; i < NAMED.length; i++) {
     var rec = NAMED[i], si = rec.i;
-    if (seen[si] || STARS[si][2] > 3.5) continue;
+    /* The same Relevant set the rest of the app uses - a plain 3.5 cut here
+       was dropping the three syllabus stars fainter than that. */
+    if (seen[si] || !starRelevant(si)) continue;
     if (syllabusOnly && !IOAA_SET[si]) continue;
     var hasName = rec.n && rec.n.length;
     var hasBayer = rec.b && rec.b.some(function (b) {
@@ -18607,7 +18825,7 @@ function iaoChecks() {
 var Identify = {
   mode: 'name',        // 'name' | 'find'
   source: 'both',      // 'star' | 'dso' | 'both'
-  starCat: 'b35',      // one of STAR_CATS
+  starCat: 'relevant', // one of STAR_CATS
   dsoScope: 'm-all',   // one of DSO_SCOPES, filtered by QUIZ_SCOPES
   askBy: 'auto'        // how a deep-sky object is named in the prompt
 };
@@ -21086,6 +21304,10 @@ window.SGP = {
   iaoCompassOf: iaoCompassOf, iaoColourOf: iaoColourOf,
   paper61SmallCircleTasks: paper61SmallCircleTasks,
   paper61ChartPlanets: paper61ChartPlanets,
+  /* One definition of "which stars", checkable from outside. */
+  starRelevant: starRelevant, STAR_CATS: STAR_CATS, starCatFn: starCatFn,
+  authScreenHTML: function () { return authScreenHTML(''); },
+  authResetScreenHTML: authResetScreenHTML, authHashParams: authHashParams,
   lsPool: lsPool, lmCollect: lmCollect, lmTarget: lmTarget, LearnMistakes: LearnMistakes, lsConsOf: lsConsOf, IOAA_SET: IOAA_SET,
   AT_REGIONS: AT_REGIONS, AT_REGION_OF: AT_REGION_OF,
   /* The animation loop stops when the page is not compositing, so a headless
