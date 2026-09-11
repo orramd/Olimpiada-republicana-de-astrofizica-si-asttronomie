@@ -5512,9 +5512,9 @@ function conAllowed(ab) {
    ticking Constellation figures back on afterwards still puts them back.
    ========================================================================== */
 var DIFFICULTY = [
-  ['easy', 'Easy', 'figures and boundaries drawn, the chart near north-up'],
-  ['medium', 'Medium', 'boundaries only, the chart often turned'],
-  ['hard', 'Hard', 'bare sky, the chart turned any way at all']
+  ['easy', 'Easy', 'figures and boundaries drawn'],
+  ['medium', 'Medium', 'boundaries only, no figures'],
+  ['hard', 'Hard', 'bare sky, and a tighter accepted error']
 ];
 var DIFF_NOTE = {};
 DIFFICULTY.forEach(function (d) { DIFF_NOTE[d[0]] = d[2]; });
@@ -5534,10 +5534,20 @@ function difficultyOverride(level) {
 
 /* A chart handed to you in an exam is not always north-up, and a shape you can
    only place upright is a shape you have half learnt. */
-function difficultyRoll(level) {
-  var odds = { easy: 0.3, medium: 0.65, hard: 0.9 }[level] || 0.5;
-  var max = { easy: 25, medium: 90, hard: 180 }[level] || 90;
-  return Math.random() < odds ? (Math.random() * 2 - 1) * max : 0;
+/* North is up in the drills, always.
+
+   A randomly turned chart was the top rung of every difficulty here, and it
+   is the wrong difficulty: it does not test whether you know where Deneb is,
+   it tests whether you can mentally rotate a picture, and you learn the second
+   skill instead of the first. What makes a question hard should be how little
+   is drawn - no figures, no boundaries, a tighter accepted error - and those
+   are all still here.
+
+   The printed chart in the mock and sky-chart rounds still arrives at a random
+   angle, because that is what the exam hands you and working out which way up
+   it goes is the first question on the paper. This is about the drills. */
+function difficultyRoll() {
+  return 0;
 }
 
 /* How close a click has to be, where the drill is a clicking drill. Set as an
@@ -5753,19 +5763,43 @@ var MESSIER_IMPORTANT_2 = (function () {
   return set;
 })();
 
+/* The deep sky beyond Messier, cut to what is actually asked.
+
+   "Caldwell, all" was 109 objects and "Other objects" 111, which as a study
+   list is not a list at all - it is the catalogue with the Messier objects
+   taken out, most of it eleventh-magnitude galaxies nobody has ever been asked
+   to name. Meanwhile the things a paper does ask for outside Messier are a
+   short, well-known set: the two Magellanic Clouds, omega Centauri and 47
+   Tucanae, the Jewel Box and the Double Cluster, eta Carinae, the Coalsack,
+   Centaurus A, the Helix, the Veil, the Rosette.
+
+   So one list of those, sized to sit beside "Messier, important" - 38 objects
+   there, 28 here - covering both hemispheres, because which one you are in
+   depends on where the olympiad is held that year. */
+var DSO_ESSENTIALS = {
+  /* Southern, and mostly naked-eye. */
+  'LMC': 1, 'SMC': 1, 'C41': 1, 'C102': 1, 'C85': 1, 'C103': 1, 'C80': 1,
+  'C106': 1, 'C94': 1, 'C14': 1, 'C100': 1, 'C93': 1, 'C92': 1, 'C99': 1,
+  'C77': 1, 'C89': 1,
+  /* Northern, and famous enough to be named in a question. */
+  'C20': 1, 'C63': 1, 'C65': 1, 'C33': 1, 'C34': 1, 'C49': 1, 'C39': 1,
+  'C6': 1, 'C38': 1, 'C57': 1, 'C55': 1, 'C59': 1
+};
+
 var DSO_SCOPES = [
   ['m-most', 'Messier · most important', function (d) { return d.tier === 1; }],
   ['m-imp', 'Messier · important', function (d) { return d.tier === 1 || d.tier === 2; }],
   ['m-imp2', 'Messier · important 2 · 50', function (d) { return !!MESSIER_IMPORTANT_2[d.m]; }],
   ['m-all', 'Messier · all 110', function (d) { return !!d.m; }],
+  ['ess', 'Beyond Messier · essentials', function (d) { return DSO_ESSENTIALS[dsoDesig(d)] === 1; }],
   ['other', 'Other objects', function (d) { return !d.m; }],
   ['c-all', 'Caldwell · all', function (d) { return !!d.c; }],
   ['south', 'Southern essentials', function (d) { return SOUTH_SET[dsoDesig(d)] === 1; }],
   ['all', 'Everything', function () { return true; }]
 ];
-/* Caldwell and the southern set stay available to Learn, but the quiz chips collapse
-   everything non-Messier into one bucket. */
-var QUIZ_SCOPES = ['m-most', 'm-imp', 'm-imp2', 'm-all', 'other', 'all'];
+/* The long tails stay reachable from Learn, where browsing a whole catalogue
+   is a reasonable thing to want. The quiz chips offer the study lists. */
+var QUIZ_SCOPES = ['m-most', 'm-imp', 'm-imp2', 'm-all', 'ess', 'all'];
 var SOUTH_SET = { 'C106': 1, 'C80': 1, 'C92': 1, 'C93': 1, 'C94': 1, 'LMC': 1, 'SMC': 1 };
 
 function scopeFilter(id) {
@@ -5890,11 +5924,12 @@ Modes.defs.dso = {
   },
 
   render: function () {
-    stageHTML(nameHeader('Name the object') + scopeChips(DsoQuiz.scope, 'dqScope') +
+    stageHTML(nameHeader('Name the object') +
+      (Modes.currentName === 'identify' ? '' : scopeChips(DsoQuiz.scope, 'dqScope')) +
               '<div id="dqBody"></div>' + scoreBar('dso'));
     bindNameKind();
     var self = this;
-    el('dqScope').addEventListener('click', function (e) {
+    if (el('dqScope')) el('dqScope').addEventListener('click', function (e) {
       var c = e.target.closest('.chip'); if (!c) return;
       DsoQuiz.scope = c.dataset.sc; pickFrom.bags = {}; self.render();
     });
@@ -5907,6 +5942,7 @@ Modes.defs.dso = {
       dsoPool(DsoQuiz.scope).length));
     el('dqStart').addEventListener('click', function () {
       DsoQuiz.started = true;
+      if (Modes.currentName === 'identify') { self.render(); return; }
       self.next();
     });
   },
@@ -6341,14 +6377,17 @@ Modes.defs.star = {
     var self = this;
     stageHTML(
       nameHeader('Name the star') +
-      '<div class="chips" id="sqCat">' + STAR_CATS.map(function (c) {
-        return '<span class="chip' + (c[0] === StarQuiz.cat ? ' on' : '') +
-               '" data-cat="' + c[0] + '">' + c[1] + '</span>';
-      }).join('') + '</div>' +
+      /* The Identify header already has these chips; a second copy of them is
+         just height between you and the question. */
+      (Modes.currentName === 'identify' ? '' :
+        '<div class="chips" id="sqCat">' + STAR_CATS.map(function (c) {
+          return '<span class="chip' + (c[0] === StarQuiz.cat ? ' on' : '') +
+                 '" data-cat="' + c[0] + '">' + c[1] + '</span>';
+        }).join('') + '</div>') +
       '<div id="sqBody"></div>' + scoreBar('star')
     );
     bindNameKind();
-    el('sqCat').addEventListener('click', function (e) {
+    if (el('sqCat')) el('sqCat').addEventListener('click', function (e) {
       var c = e.target.closest('.chip'); if (!c) return;
       StarQuiz.cat = c.dataset.cat; pickFrom.bags = {}; self.render();
     });
@@ -6360,7 +6399,9 @@ Modes.defs.star = {
     setHTML('sqBody', startPanel('sqStart', 'Name the marked star.', this.pool().length));
     el('sqStart').addEventListener('click', function () {
       StarQuiz.started = true;
-      self.next();
+      /* Whole panel, not just the body: the header collapses to one line once
+         a question is up, and it can only do that if it is drawn again. */
+      self.render();
     });
   },
 
@@ -6470,8 +6511,9 @@ Modes.defs.star = {
    asked the same thing as the catalogue number but only for the minority of objects
    that carry a name. */
 var ASK_BY = [
-  ['auto', 'Catalogue number'], ['m', 'Messier number'], ['c', 'Caldwell number'],
-  ['ngc', 'NGC number']
+  /* NGC numbers are gone: "which object is NGC 6205?" is a lookup, not
+     astronomy, and nobody is asked it. */
+  ['auto', 'Catalogue number'], ['m', 'Messier number'], ['c', 'Caldwell number']
 ];
 function askLabel(d, mode) {
   if (mode === 'm' && d.m) return 'M' + d.m;
@@ -6544,6 +6586,7 @@ Modes.defs.locate = {
       this.poolSize()));
     el('loStart').addEventListener('click', function () {
       Locate.started = true;
+      if (Modes.currentName === 'identify') { self.render(); return; }
       self.next();
     });
   },
@@ -7792,7 +7835,7 @@ LEARN_TOPICS.circles = {
    three that ask different questions: with the shape drawn, with only the
    neighbours' shapes drawn, and with nothing at all on a turned chart. */
 var LS_STEPS = ['Study it', '1 · figure, marker', '2 · the neighbours',
-                '3 · bare and turned'];
+                '3 · bare sky'];
 var LS_LAST_STEP = 3;
 
 /* What each rung draws, and how the prompt explains itself. */
@@ -7803,8 +7846,11 @@ function lsLevel(step, ab) {
       note: 'The figure and the boundary are drawn, and the star is ringed.' },
     { lines: true, bounds: false, hide: ab, marker: false, roll: false,
       note: 'Every constellation’s figure except this one. Find it by its neighbours.' },
-    { lines: false, bounds: false, hide: null, marker: false, roll: true,
-      note: 'Nothing drawn, and the chart is turned. North is not up.' }
+    /* This rung used to turn the chart as well. Rotating it at random tests
+       mental rotation rather than the sky, so what makes this the hard one is
+       simply that nothing is drawn. */
+    { lines: false, bounds: false, hide: null, marker: false, roll: false,
+      note: 'Nothing drawn at all. North is up; the sky is on its own.' }
   ][step];
 }
 
@@ -18911,10 +18957,47 @@ function identifySourceNow() {
   return Math.random() < 0.5 ? 'star' : 'dso';
 }
 
-/* The header both halves render. Everything above the question itself. */
+/* Is a question on screen, as opposed to the setting-up screen? */
+function identifyRunning() {
+  return Identify.mode === 'find' ? !!Locate.started
+                                  : !!(StarQuiz.started || DsoQuiz.started);
+}
+
+function identifyChipLabel(list, id) {
+  for (var i = 0; i < list.length; i++) if (list[i][0] === id) return list[i][1];
+  return id;
+}
+
+/* What is set, in one line, for while you are answering. */
+function identifySummary() {
+  var bits = [identifyChipLabel(IDENTIFY_MODES, Identify.mode),
+              identifyChipLabel(IDENTIFY_SOURCES, Identify.source)];
+  if (Identify.source !== 'dso') {
+    bits.push(identifyChipLabel(STAR_CATS, Identify.starCat));
+  }
+  if (Identify.source !== 'star') {
+    bits.push(identifyChipLabel(DSO_SCOPES, Identify.dsoScope));
+  }
+  var lv = Identify.mode === 'find' ? Locate.level : NameQuiz.level;
+  bits.push(identifyChipLabel(DIFFICULTY, lv));
+  return bits.join(' · ');
+}
+
+/* The header both halves render. Everything above the question itself.
+
+   While a question is on screen this collapses to a single line. The full set
+   of chips is four stacks tall - mode, catalogue, which stars, which objects,
+   how to ask, difficulty - and rendering all of it above every question pushed
+   the question itself, the answer box and the score off the bottom of the
+   panel on a laptop. The settings belong on the screen where you choose them;
+   Change settings goes back there. */
 function identifyHeader() {
   var showStars = Identify.source !== 'dso';
   var showDsos = Identify.source !== 'star';
+  if (identifyRunning()) {
+    return '<h3>Identify</h3>' +
+      '<div class="note" id="idSummary">' + esc(identifySummary()) + '</div>';
+  }
   return '<h3>Identify</h3>' +
     '<div class="chips" id="idMode">' + IDENTIFY_MODES.map(function (m) {
       return '<span class="chip' + (m[0] === Identify.mode ? ' on' : '') +
