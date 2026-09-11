@@ -5802,6 +5802,14 @@ var DSO_SCOPES = [
 var QUIZ_SCOPES = ['m-most', 'm-imp', 'm-imp2', 'm-all', 'ess', 'all'];
 var SOUTH_SET = { 'C106': 1, 'C80': 1, 'C92': 1, 'C93': 1, 'C94': 1, 'LMC': 1, 'SMC': 1 };
 
+/* A set id saved before this list changed - 'south' or 'c-all' - now has no
+   chip to select it, so send it to the list that replaced them rather than
+   leaving the topic showing nothing. */
+function learnSetId(id) {
+  for (var i = 0; i < LEARN_SETS.length; i++) if (LEARN_SETS[i][0] === id) return id;
+  return (id === 'south' || id === 'c-all' || id === 'other') ? 'ess' : LEARN_SETS[0][0];
+}
+
 function scopeFilter(id) {
   var f = DSO_SCOPES.filter(function (s) { return s[0] === id; })[0];
   return f ? f[2] : function () { return true; };
@@ -6067,13 +6075,16 @@ function bindLearnTopic() {
   });
 }
 
+/* Learn kept its own list of sets, which is how it ended up still offering
+   "Southern essentials" and "Caldwell, all" after the quizzes had replaced
+   both with one curated list. Same sets in both places now - a study list is
+   a study list wherever you meet it. */
 var LEARN_SETS = [
   ['m-most', 'Messier · most important'],
   ['m-imp', 'Messier · important'],
   ['m-imp2', 'Messier · important 2 · 50'],
   ['m-all', 'Messier · all 110'],
-  ['south', 'Southern essentials'],
-  ['c-all', 'Caldwell · all']
+  ['ess', 'Beyond Messier · essentials']
 ];
 /* Four levels of finding, each taking away one more prop: first the marker is
    drawn for you, then only the figures, then a bare upright sky, and finally a
@@ -6121,6 +6132,7 @@ Modes.defs.learn = {
   },
 
   rebuild: function () {
+    Learn.setId = learnSetId(Learn.setId);
     var f = scopeFilter(Learn.setId), list = [];
     for (var i = 0; i < DSOS.length; i++) {
       if (f(DSOS[i]) && conAllowed(DSOS[i].con)) list.push(i);
