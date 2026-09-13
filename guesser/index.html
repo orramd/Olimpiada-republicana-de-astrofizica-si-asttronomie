@@ -135,7 +135,8 @@
   width: 100%; box-sizing: border-box; }html.ui-desktop #printSheet{ display: none; }
 @media print{html.ui-desktop body > *{ display: none !important; }html.ui-desktop body > #printSheet{ display: block !important; position: static; margin: 0; }html.ui-desktop #printSheet img{ width: 100%; height: auto; }
   @page{ size: A4 portrait; margin: 10mm; }
-}
+}html.ui-desktop #spSide #spMap{ width: 100%; height: auto; display: block; border-radius: 6px;
+  border: 1px solid var(--line, #222b3d); cursor: crosshair; margin-top: 6px; }
 
 html.ui-mobile *,html.ui-mobile *::before,html.ui-mobile *::after{ box-sizing: border-box; -webkit-tap-highlight-color: transparent; }html.ui-mobile,html.ui-mobile body{
   height: 100%; margin: 0; overscroll-behavior: none;
@@ -4177,7 +4178,7 @@ function bindPointer() {
     }
 
     if (e.key === 'Escape' && typeof SkyPrint !== 'undefined' && SkyPrint.open) {
-      skyPrintClose(); e.preventDefault(); return;
+      skyChartExit(); e.preventDefault(); return;
     }
     if (typing) {
       if (e.key === 'Escape') document.activeElement.blur();
@@ -4228,7 +4229,8 @@ function bindPointer() {
     /* Shift+S: the printable sky chart, from wherever you are. Lower-case s
        is left alone - it is reserved. */
     if (e.key === 'S' && typeof skyPrintOpen === 'function') {
-      if (SkyPrint.open) skyPrintClose(); else skyPrintOpen();
+      if (Modes.currentName === 'chart') Modes.enter(Modes.home || 'explore');
+      else Modes.enter('chart');
       e.preventDefault();
       return;
     }
@@ -21642,6 +21644,21 @@ LEARN_TOPICS.lists = {
    ========================================================================== */
 'use strict';
 
+/* How much of the sheet the sky disc takes, leaving room for the ring.
+
+   The first version drew the disc at exactly half the sheet's width, which is
+   what a 180-degree field gives you in this projection - so the ring outside
+   it ran off all four edges and the top of the chart was cut off. The disc has
+   to be smaller than the paper by at least the width of the ring.
+
+   In the equidistant projection the horizon lands at `scale` pixels out and
+   scale is (side/2) / (fov/180), so asking for a disc of FILL times the half
+   width is the same as asking for a field of 180/FILL degrees. */
+var SHEET_FILL = 0.855;
+var SHEET_RING = 1.085;          /* outer edge of the ring, in disc radii */
+
+function skyChartFov() { return 180 / SHEET_FILL; }
+
 var SkyPrint = {
   /* Where the sheet gets its place and time. The planetarium already holds a
      latitude, a longitude and a moment, and keeping one copy means the chart
@@ -21662,6 +21679,8 @@ var SkyPrint = {
     dsos: false,
     dsoLabels: false,
     paper: true,          /* black on white, which is what a printer wants */
+  horizon: true,        /* the horizon circle itself, whether or not the ring
+                           of degrees is drawn round it */
     limMag: 5.5,
     starScale: 0.8,
     horizonGlow: false,
@@ -21706,17 +21725,22 @@ function skyPrintCaption() {
    assuming the chart is a plain circle - so it stays right if the projection
    or the roll ever changes. */
 function skyPrintRing(ctx, lat, lst, ink, px) {
+  var o = SkyPrint.opts;
   var r = Sky.scale;
   var cx = Sky.cx, cy = Sky.cy;
-  var ringOuter = r * 1.085;
+  var ringOuter = r * SHEET_RING;
 
   ctx.save();
   ctx.strokeStyle = ink;
   ctx.fillStyle = ink;
   ctx.lineWidth = Math.max(1, px / 900);
 
-  /* The horizon itself, and the outside of the ring. */
-  ctx.beginPath(); ctx.arc(cx, cy, r, 0, TAU); ctx.stroke();
+  /* The horizon is the edge of the sky and belongs to the chart, not to the
+     ring of degrees around it: turning the degrees off used to take the
+     horizon with them and leave the stars floating on the page. */
+  if (o.horizon) { ctx.beginPath(); ctx.arc(cx, cy, r, 0, TAU); ctx.stroke(); }
+  if (!o.azimuthRing) { ctx.restore(); return; }
+
   ctx.beginPath(); ctx.arc(cx, cy, ringOuter, 0, TAU); ctx.stroke();
 
   var font = Math.max(9, Math.round(px / 74));
@@ -21740,7 +21764,7 @@ function skyPrintRing(ctx, lat, lst, ink, px) {
 
     var cardinal = { 0: 'N', 90: 'E', 180: 'S', 270: 'W' }[az];
     var mid = (r + ringOuter) / 2;
-    if (cardinal && SkyPrint.opts.cardinals) {
+    if (cardinal && o.cardinals) {
       ctx.save();
       ctx.font = '700 ' + Math.round(font * 1.5) + 'px ui-sans-serif, system-ui, sans-serif';
       ctx.fillText(cardinal, cx + ux * mid, cy + uy * mid);
@@ -21809,7 +21833,7 @@ function skyPrintSheet(ctx, px) {
   Sky.dpr = 1;
   Sky.ra = lst;
   Sky.dec = clamp(p.lat, -89.5, 89.5);
-  Sky.fov = 180;
+  Sky.fov = skyChartFov();
   Sky.roll = 0;
   Sky.panX = 0; Sky.panY = 0;
   Sky.projection = 'equidistant';
@@ -21867,7 +21891,7 @@ function skyPrintSheet(ctx, px) {
     }
     ctx.restore();
 
-    if (o.azimuthRing) skyPrintRing(ctx, Sky.dec, lst, ink, px);
+    if (o.azimuthRing || o.horizon) skyPrintRing(ctx, Sky.dec, lst, ink, px);
 
     /* The caption, in the strip left under the circle. */
     var cap = skyPrintCaption();
@@ -21908,6 +21932,138 @@ function skyPrintImage(px) {
   return c;
 }
 
+
+/* ------------------------------------------------------------------- the map
+
+   Somewhere to put a finger on rather than typing two numbers.
+
+   It is a plate carree - longitude straight across, latitude straight up -
+   which is the projection a graticule is simplest on, and the graticule is the
+   point: parallels every fifteen degrees, meridians every thirty, with the
+   equator, the tropics and the polar circles picked out because those are the
+   lines a latitude gets read against. No coastlines: this file carries no
+   world outline and inventing one from memory would be worse than none. What
+   it carries instead are the places the app already knows - the twelve
+   olympiad sites - as dots you can aim at, and whichever is nearest is named
+   under the map as you click. */
+
+var SKY_MAP_W = 300, SKY_MAP_H = 150;
+
+function skyMapDraw() {
+  var c = el('spMap');
+  if (!c) return;
+  var ctx = c.getContext('2d');
+  var w = c.width, h = c.height;
+  var x = function (lon) { return (lon + 180) / 360 * w; };
+  var y = function (lat) { return (90 - lat) / 180 * h; };
+
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = '#0b1220';
+  ctx.fillRect(0, 0, w, h);
+
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = '#1d2740';
+  ctx.beginPath();
+  for (var lon = -180; lon <= 180; lon += 30) {
+    ctx.moveTo(x(lon) + 0.5, 0); ctx.lineTo(x(lon) + 0.5, h);
+  }
+  for (var lat = -75; lat <= 75; lat += 15) {
+    ctx.moveTo(0, y(lat) + 0.5); ctx.lineTo(w, y(lat) + 0.5);
+  }
+  ctx.stroke();
+
+  /* The lines you actually read a latitude against. */
+  ctx.strokeStyle = '#3a4a6d';
+  ctx.beginPath();
+  ctx.moveTo(0, y(0) + 0.5); ctx.lineTo(w, y(0) + 0.5);
+  ctx.stroke();
+  ctx.setLineDash([3, 3]);
+  ctx.strokeStyle = '#31405f';
+  ctx.beginPath();
+  [23.44, -23.44, 66.56, -66.56].forEach(function (lat) {
+    ctx.moveTo(0, y(lat) + 0.5); ctx.lineTo(w, y(lat) + 0.5);
+  });
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  /* The places the app already knows. */
+  if (typeof MOCK_SITES !== 'undefined') {
+    ctx.fillStyle = '#55637f';
+    MOCK_SITES.forEach(function (site) {
+      ctx.beginPath();
+      ctx.arc(x(site[2]), y(site[1]), 1.8, 0, TAU);
+      ctx.fill();
+    });
+  }
+
+  /* Where you are now. */
+  var p = skyPrintPlace();
+  ctx.strokeStyle = '#ffc14d';
+  ctx.fillStyle = '#ffc14d';
+  ctx.lineWidth = 1.4;
+  var px = x(p.lon), py = y(p.lat);
+  ctx.beginPath(); ctx.arc(px, py, 4, 0, TAU); ctx.stroke();
+  ctx.beginPath(); ctx.arc(px, py, 1.2, 0, TAU); ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(px - 8, py); ctx.lineTo(px - 5, py);
+  ctx.moveTo(px + 5, py); ctx.lineTo(px + 8, py);
+  ctx.moveTo(px, py - 8); ctx.lineTo(px, py - 5);
+  ctx.moveTo(px, py + 5); ctx.lineTo(px, py + 8);
+  ctx.stroke();
+}
+
+/* The named place nearest a point, for the caption under the map. */
+function skyMapNearest(lat, lon) {
+  if (typeof MOCK_SITES === 'undefined') return null;
+  var best = null, bd = 1e9;
+  MOCK_SITES.forEach(function (site) {
+    var d = sepDeg(lon, lat, site[2], site[1]);
+    if (d < bd) { bd = d; best = site; }
+  });
+  return best ? { name: best[0], deg: bd } : null;
+}
+
+function skyMapLabel() {
+  var p = skyPrintPlace(), n = skyMapNearest(p.lat, p.lon);
+  var ns = p.lat >= 0 ? 'N' : 'S', ew = p.lon >= 0 ? 'E' : 'W';
+  var txt = Math.abs(p.lat).toFixed(2) + '° ' + ns + ', ' +
+            Math.abs(p.lon).toFixed(2) + '° ' + ew;
+  if (n) {
+    txt += n.deg < 1.5 ? ' — ' + n.name
+                       : ' — ' + Math.round(n.deg) + '° from ' + n.name;
+  }
+  return txt;
+}
+
+function skyMapBind() {
+  var c = el('spMap');
+  if (!c) return;
+  var P = typeof Planetarium !== 'undefined' ? Planetarium : null;
+  function pick(e) {
+    if (!P) return;
+    var r = c.getBoundingClientRect();
+    var fx = (e.clientX - r.left) / r.width;
+    var fy = (e.clientY - r.top) / r.height;
+    P.longitude = clamp(fx * 360 - 180, -180, 180);
+    P.latitude = clamp(90 - fy * 180, -89.5, 89.5);
+    if (el('spLat')) el('spLat').value = P.latitude.toFixed(4);
+    if (el('spLon')) el('spLon').value = P.longitude.toFixed(4);
+    if (el('spWhere')) el('spWhere').textContent = skyMapLabel();
+    skyMapDraw();
+    skyPrintRefresh();
+  }
+  c.addEventListener('pointerdown', function (e) {
+    pick(e);
+    var move = function (ev) { pick(ev); };
+    var up = function () {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  });
+}
+
 /* ------------------------------------------------------------------- panel */
 
 function skyPrintCheckbox(key, label) {
@@ -21933,6 +22089,9 @@ function skyPrintPanelHTML() {
     '</div>' +
     '<label class="note" style="display:block;margin-top:6px">UTC date and time' +
     '<input id="spDate" type="datetime-local" value="' + iso + '"></label>' +
+    '<canvas id="spMap" width="' + SKY_MAP_W + '" height="' + SKY_MAP_H + '" ' +
+    'title="Click or drag to put the observer somewhere"></canvas>' +
+    '<div class="note" id="spWhere">' + esc(skyMapLabel()) + '</div>' +
     '<div class="btnrow"><button class="btn sm" id="spNow">Now</button>' +
     '<button class="btn sm" id="spHere">Use my location</button></div>' +
 
@@ -21947,7 +22106,8 @@ function skyPrintPanelHTML() {
     skyPrintCheckbox('planetNames', '… named') +
     skyPrintCheckbox('dsos', 'Deep-sky objects') +
     skyPrintCheckbox('dsoLabels', '… named') +
-    skyPrintCheckbox('azimuthRing', 'Azimuth ring') +
+    skyPrintCheckbox('horizon', 'Horizon circle') +
+    skyPrintCheckbox('azimuthRing', 'Azimuth ring of degrees') +
     skyPrintCheckbox('cardinals', '… as N E S W instead of degrees') +
     skyPrintCheckbox('paper', 'Black on white, for printing') +
 
@@ -21988,6 +22148,8 @@ function skyPrintRefresh() {
 
 function skyPrintBind() {
   var P = typeof Planetarium !== 'undefined' ? Planetarium : null;
+  skyMapDraw();
+  skyMapBind();
 
   qsAll('spSide', '[data-sp]').forEach(function (box) {
     box.addEventListener('change', function () {
@@ -22003,8 +22165,12 @@ function skyPrintBind() {
       if (isFinite(v)) { apply(v); skyPrintRefresh(); }
     });
   }
-  num('spLat', function (v) { if (P) P.latitude = clamp(v, -89.5, 89.5); });
-  num('spLon', function (v) { if (P) P.longitude = clamp(v, -180, 180); });
+  function afterPlace() {
+    if (el('spWhere')) el('spWhere').textContent = skyMapLabel();
+    skyMapDraw();
+  }
+  num('spLat', function (v) { if (P) P.latitude = clamp(v, -89.5, 89.5); afterPlace(); });
+  num('spLon', function (v) { if (P) P.longitude = clamp(v, -180, 180); afterPlace(); });
 
   var d = el('spDate');
   if (d) d.addEventListener('change', function () {
@@ -22028,6 +22194,8 @@ function skyPrintBind() {
       P.longitude = clamp(pos.coords.longitude, -180, 180);
       el('spLat').value = P.latitude.toFixed(4);
       el('spLon').value = P.longitude.toFixed(4);
+      if (el('spWhere')) el('spWhere').textContent = skyMapLabel();
+      skyMapDraw();
       btn.textContent = 'Use my location';
       skyPrintRefresh();
     }, function () { btn.textContent = 'Not allowed'; });
@@ -22060,7 +22228,7 @@ function skyPrintBind() {
     a.href = c.toDataURL('image/png');
     a.click();
   });
-  if (el('spClose')) el('spClose').addEventListener('click', skyPrintClose);
+  if (el('spClose')) el('spClose').addEventListener('click', skyChartExit);
 }
 
 function skyPrintOpen() {
@@ -22072,6 +22240,13 @@ function skyPrintOpen() {
   document.body.appendChild(wrap);
   skyPrintBind();
   skyPrintRefresh();
+}
+
+/* Closing the panel means leaving the section, now that it is one - otherwise
+   the × would drop you on a mode with nothing in it. */
+function skyChartExit() {
+  if (Modes.currentName === 'chart') Modes.enter(Modes.home || 'explore');
+  else skyPrintClose();
 }
 
 function skyPrintClose() {
@@ -22098,6 +22273,36 @@ function skyPrintNow() {
   var go = function () { window.print(); };
   if (img.complete) go(); else img.onload = go;
 }
+
+/* ------------------------------------------------------------- its own tab
+
+   The chart is a thing you make, not a drill you sit, so it gets a place on
+   the bar rather than living behind a keyboard shortcut nobody would guess.
+   Shift+S still opens it from anywhere. */
+Modes.defs.chart = {
+  start: function () {
+    /* Leave the sky behind it alone: the panel is the whole of this mode. */
+    Modes.override = null;
+    skyPrintOpen();
+  },
+  leave: function () { skyPrintClose(); }
+};
+
+(function () {
+  if (document.querySelector('.tab[data-mode="chart"]')) return;
+  var after = document.querySelector('.tab[data-mode="planetarium"]');
+  if (!after || !after.parentNode) return;
+  var b = document.createElement('button');
+  b.className = 'tab';
+  b.dataset.mode = 'chart';
+  b.textContent = 'Sky chart';
+  b.title = 'A printable all-sky chart — Shift+S';
+  /* Bound here rather than left to the boot sweep over .tab[data-mode]: a tab
+     added by a later file than the one that does the sweep is not in it, and a
+     tab that does nothing when you press it is worse than no tab. */
+  b.addEventListener('click', function () { Modes.enter('chart'); });
+  after.parentNode.insertBefore(b, after.nextSibling);
+})();
 
 /* ---- what the shared engine reads by name ---- */
 window.persist = persist;
