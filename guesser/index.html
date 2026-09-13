@@ -122,7 +122,20 @@
   left: 12px; right: auto; top: 12px; width: auto; height: auto;
   padding: 5px; border: 1px solid var(--edge-soft); border-radius: 9px;
   transform: none; transition: none; overflow: visible;
-}html.ui-desktop .charttools .bar > *{ display: none; }html.ui-desktop .charttools .bar > #btnTimer,html.ui-desktop .charttools .bar > #btnRuler,html.ui-desktop .charttools .bar > #btnCompass,html.ui-desktop .charttools .bar > #btnPoint,html.ui-desktop .charttools .bar > #btnRotate{ display: inline-flex; }html.ui-desktop .charttools .barpeek{ display: none; }
+}html.ui-desktop .charttools .bar > *{ display: none; }html.ui-desktop .charttools .bar > #btnTimer,html.ui-desktop .charttools .bar > #btnRuler,html.ui-desktop .charttools .bar > #btnCompass,html.ui-desktop .charttools .bar > #btnPoint,html.ui-desktop .charttools .bar > #btnRotate{ display: inline-flex; }html.ui-desktop .charttools .barpeek{ display: none; }html.ui-desktop #spOverlay{ position: fixed; inset: 0; z-index: 900; background: rgba(4,6,12,.82);
+  backdrop-filter: blur(2px); overflow: auto; }html.ui-desktop #spWrap{ display: flex; gap: 18px; align-items: flex-start; padding: 18px;
+  min-height: 100%; box-sizing: border-box; }html.ui-desktop #spSheet{ flex: 1 1 auto; display: flex; align-items: flex-start;
+  justify-content: center; }html.ui-desktop #spSheet img{ width: min(78vh, 100%); height: auto; border-radius: 8px;
+  box-shadow: 0 10px 40px rgba(0,0,0,.55); background: #fff; }html.ui-desktop #spSide{ flex: 0 0 320px; max-width: 340px; background: var(--panel, #0c1018);
+  border: 1px solid var(--line, #222b3d); border-radius: 12px; padding: 14px;
+  max-height: calc(100vh - 36px); overflow: auto; }html.ui-desktop #spSide h2{ margin: 14px 0 6px; font-size: 13px; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--dim, #8b95a8); }html.ui-desktop #spSide .spHead{ display: flex; align-items: center; justify-content: space-between;
+  font: 600 18px/1.2 ui-sans-serif, system-ui, sans-serif; color: var(--fg, #e9edf7); }html.ui-desktop #spSide .spRow{ display: flex; align-items: center; gap: 8px; padding: 3px 0;
+  font-size: 13px; color: var(--fg, #c8cfdd); cursor: pointer; }html.ui-desktop #spSide input[type=range]{ width: 100%; }html.ui-desktop #spSide input[type=number],html.ui-desktop #spSide input[type=datetime-local],html.ui-desktop #spSide select{
+  width: 100%; box-sizing: border-box; }html.ui-desktop #printSheet{ display: none; }
+@media print{html.ui-desktop body > *{ display: none !important; }html.ui-desktop body > #printSheet{ display: block !important; position: static; margin: 0; }html.ui-desktop #printSheet img{ width: 100%; height: auto; }
+  @page{ size: A4 portrait; margin: 10mm; }
+}
 
 html.ui-mobile *,html.ui-mobile *::before,html.ui-mobile *::after{ box-sizing: border-box; -webkit-tap-highlight-color: transparent; }html.ui-mobile,html.ui-mobile body{
   height: 100%; margin: 0; overscroll-behavior: none;
@@ -4163,6 +4176,9 @@ function bindPointer() {
       return;
     }
 
+    if (e.key === 'Escape' && typeof SkyPrint !== 'undefined' && SkyPrint.open) {
+      skyPrintClose(); e.preventDefault(); return;
+    }
     if (typing) {
       if (e.key === 'Escape') document.activeElement.blur();
       return;
@@ -4207,6 +4223,13 @@ function bindPointer() {
     if ((e.key === 'F' || e.key === 'f') && e.shiftKey) {
       Sky.showFps = !Sky.showFps;
       Sky.needsDraw = true;
+      return;
+    }
+    /* Shift+S: the printable sky chart, from wherever you are. Lower-case s
+       is left alone - it is reserved. */
+    if (e.key === 'S' && typeof skyPrintOpen === 'function') {
+      if (SkyPrint.open) skyPrintClose(); else skyPrintOpen();
+      e.preventDefault();
       return;
     }
     if (e.key === 's') return;
@@ -10598,7 +10621,8 @@ var Planetarium = {
          needs is well served by a single set of presets. */
       '<div class="note" style="margin-top:7px">Sky speed <b id="ptSpeedOut">' + fmtSpeedMult(this.speed) + '</b></div>' +
       '<input id="ptSpeed" type="range" min="0" max="5" step="0.02" value="' + Math.log(Math.max(1, this.speed)) / Math.LN10 + '" style="width:100%">' +
-      '<div class="btnrow" style="margin-top:5px"><button class="btn sm" id="ptCentre">Centre zenith</button></div>' +
+      '<div class="btnrow" style="margin-top:5px"><button class="btn sm" id="ptCentre">Centre zenith</button>' +
+      '<button class="btn sm" id="ptChart" title="A printable all-sky chart of this place and moment — Shift+S">Sky chart…</button></div>' +
       '<label class="row"><input id="ptFigures" type="checkbox"' + (this.showFigures ? ' checked' : '') + '><span>Constellation figures</span></label>' +
       '<label class="row"><input id="ptConNames" type="checkbox"' + (this.showConNames ? ' checked' : '') + '><span>Constellation names</span></label>' +
       '<label class="row"><input id="ptLabels" type="checkbox"' + (this.showLabels ? ' checked' : '') + '><span>Star labels</span></label>' +
@@ -10708,6 +10732,9 @@ var Planetarium = {
       self.speed = Math.round(Math.pow(10, +this.value));
       var out = el('ptSpeedOut');
       if (out) out.textContent = fmtSpeedMult(self.speed);
+    });
+    on('ptChart', 'click', function () {
+      if (typeof skyPrintOpen === 'function') skyPrintOpen();
     });
     on('ptCentre', 'click', function () {
       self.viewAlt = 35; self.viewAz = 180; Sky.fov = 110; self.applyView();
@@ -21589,6 +21616,489 @@ LEARN_TOPICS.lists = {
   }
 };
 
+/* ---- js/73-skychart.js ---- */
+/* ==========================================================================
+   The printable all-sky chart.
+
+   What this replaces: aiming the planetarium at the zenith, zooming out until
+   the horizon is roughly in frame, and screenshotting it. That never came out
+   square, never came out at print resolution, and had no scale on it - you
+   could not measure an altitude off the paper, which is the one thing a chart
+   is for.
+
+   So: the same sheet Heavens-Above prints. The zenith at the centre, the
+   horizon as a circle, an azimuth ring round the outside marked every ten
+   degrees, and a caption saying where and when. Drawn by the app's own
+   renderer at whatever resolution the page is printed at, rather than scaled
+   up from the screen.
+
+   The geometry is not new - the mock's printed-chart round already uses it:
+   the equidistant projection centred on the zenith, which is the projection
+   that makes altitude a linear distance from the centre. Point it at the
+   zenith of a given place and moment (RA = local sidereal time, Dec = the
+   latitude) and north comes out at the top and east on the left, which is how
+   you see the sky when you look up and the convention every printed chart
+   follows.
+   ========================================================================== */
+'use strict';
+
+var SkyPrint = {
+  /* Where the sheet gets its place and time. The planetarium already holds a
+     latitude, a longitude and a moment, and keeping one copy means the chart
+     is always of the sky the rest of the app is showing. */
+  opts: {
+    azimuthRing: true,
+    cardinals: false,     /* the degrees carry the orientation; the letters are
+                             an extra, and the sheet reads cleaner without */
+    equator: true,
+    ecliptic: true,
+    galactic: false,
+    conLines: true,
+    conNames: true,
+    bounds: false,
+    starNames: 'none',    /* none | proper | bayer | both */
+    planets: true,
+    planetNames: true,
+    dsos: false,
+    dsoLabels: false,
+    paper: true,          /* black on white, which is what a printer wants */
+    limMag: 5.5,
+    starScale: 0.8,
+    horizonGlow: false,
+    size: 2000            /* pixels across the square sheet */
+  },
+  open: false
+};
+
+function skyPrintLst() {
+  return typeof Planetarium !== 'undefined'
+    ? Planetarium.lst()
+    : ptLstFromDate(Date.now(), 0);
+}
+
+function skyPrintPlace() {
+  var P = typeof Planetarium !== 'undefined' ? Planetarium : null;
+  return {
+    lat: P ? P.latitude : 47,
+    lon: P ? P.longitude : 28,
+    dateMs: P ? P.dateMs : Date.now(),
+    clock: P ? (P.timeSource === 'clock') : true
+  };
+}
+
+function skyPrintCaption() {
+  var p = skyPrintPlace();
+  var ns = p.lat >= 0 ? 'N' : 'S', ew = p.lon >= 0 ? 'E' : 'W';
+  var when = new Date(p.dateMs).toISOString().slice(0, 16).replace('T', ' ');
+  return {
+    place: Math.abs(p.lat).toFixed(4) + '° ' + ns + '  ' +
+           Math.abs(p.lon).toFixed(4) + '° ' + ew,
+    time: when + ' UTC',
+    lst: fmtRA(skyPrintLst())
+  };
+}
+
+/* ------------------------------------------------------------------ drawing */
+
+/* The ring: ticks and degree labels round the horizon, and the cardinal
+   letters if they are wanted. Everything is placed by asking the projection
+   where a given azimuth on the horizon actually lands, rather than by
+   assuming the chart is a plain circle - so it stays right if the projection
+   or the roll ever changes. */
+function skyPrintRing(ctx, lat, lst, ink, px) {
+  var r = Sky.scale;
+  var cx = Sky.cx, cy = Sky.cy;
+  var ringOuter = r * 1.085;
+
+  ctx.save();
+  ctx.strokeStyle = ink;
+  ctx.fillStyle = ink;
+  ctx.lineWidth = Math.max(1, px / 900);
+
+  /* The horizon itself, and the outside of the ring. */
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, TAU); ctx.stroke();
+  ctx.beginPath(); ctx.arc(cx, cy, ringOuter, 0, TAU); ctx.stroke();
+
+  var font = Math.max(9, Math.round(px / 74));
+  ctx.font = '500 ' + font + 'px ui-sans-serif, system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  for (var az = 0; az < 360; az += 10) {
+    var rd = ptAltAzToRaDec(0, az, lat, lst);
+    var p = projRaDec(rd.ra, rd.dec);
+    if (!p) continue;
+    var dx = p.x - cx, dy = p.y - cy;
+    var len = Math.hypot(dx, dy) || 1;
+    var ux = dx / len, uy = dy / len;
+
+    /* A tick from the horizon out into the ring. */
+    ctx.beginPath();
+    ctx.moveTo(cx + ux * r, cy + uy * r);
+    ctx.lineTo(cx + ux * ringOuter, cy + uy * ringOuter);
+    ctx.stroke();
+
+    var cardinal = { 0: 'N', 90: 'E', 180: 'S', 270: 'W' }[az];
+    var mid = (r + ringOuter) / 2;
+    if (cardinal && SkyPrint.opts.cardinals) {
+      ctx.save();
+      ctx.font = '700 ' + Math.round(font * 1.5) + 'px ui-sans-serif, system-ui, sans-serif';
+      ctx.fillText(cardinal, cx + ux * mid, cy + uy * mid);
+      ctx.restore();
+    } else {
+      /* Turned to sit along the ring, the way a compass rose is printed. */
+      ctx.save();
+      ctx.translate(cx + ux * mid, cy + uy * mid);
+      ctx.rotate(Math.atan2(uy, ux) + Math.PI / 2);
+      ctx.fillText(String(az) + '°', 0, 0);
+      ctx.restore();
+    }
+  }
+  ctx.restore();
+}
+
+/* The planets, drawn for this sheet rather than for the screen.
+
+   The planetarium's own planet drawing uses a glow and a pale colour, which
+   is right on a dark sky and invisible on white paper. A printed chart marks
+   a planet as a ring with a dot in it - distinct from a star at a glance, and
+   it survives a photocopier. */
+function skyPrintPlanets(ctx, dateMs, lst, ink, px) {
+  if (typeof paper61PlanetSpecs !== 'function' || typeof ptPlanetRaDec !== 'function') return;
+  var days = orbDaysSinceJ2000(dateMs);
+  var r = Math.max(2.5, px / 330);
+  ctx.save();
+  ctx.lineWidth = Math.max(1, px / 1100);
+  ctx.font = '600 ' + Math.max(9, Math.round(px / 88)) + 'px ui-sans-serif, system-ui, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  paper61PlanetSpecs().forEach(function (spec) {
+    var rd = ptPlanetRaDec(spec[0], days);
+    if (ptRaDecToAltAz(rd.ra, rd.dec, Sky.dec, lst).alt <= 0) return;
+    var q = projRaDec(rd.ra, rd.dec);
+    if (!q) return;
+    ctx.strokeStyle = SkyPrint.opts.paper ? '#101010' : spec[1];
+    ctx.fillStyle = ctx.strokeStyle;
+    ctx.beginPath(); ctx.arc(q.x, q.y, r, 0, TAU); ctx.stroke();
+    ctx.beginPath(); ctx.arc(q.x, q.y, r * 0.34, 0, TAU); ctx.fill();
+    if (SkyPrint.opts.planetNames) {
+      ctx.fillText(ptCap(spec[0]), q.x + r * 1.8, q.y);
+    }
+  });
+  ctx.restore();
+}
+
+/* The sheet: chart, ring, caption. ctx is expected to be sized px by px plus
+   room underneath for the caption. */
+function skyPrintSheet(ctx, px) {
+  var o = SkyPrint.opts, p = skyPrintPlace();
+  var lst = skyPrintLst();
+  var ink = o.paper ? '#101010' : '#c8cfdd';
+
+  /* Point the app's own renderer at the zenith of that place and moment. */
+  var save = {
+    canvas: Sky.canvas, ctx: Sky.ctx, w: Sky.w, h: Sky.h, dpr: Sky.dpr,
+    ra: Sky.ra, dec: Sky.dec, fov: Sky.fov, roll: Sky.roll,
+    projection: Sky.projection, panX: Sky.panX, panY: Sky.panY,
+    overlays: Sky.overlays, override: Modes.override
+  };
+
+  Sky.canvas = ctx.canvas;
+  Sky.ctx = ctx;
+  Sky.w = px; Sky.h = px;
+  Sky.dpr = 1;
+  Sky.ra = lst;
+  Sky.dec = clamp(p.lat, -89.5, 89.5);
+  Sky.fov = 180;
+  Sky.roll = 0;
+  Sky.panX = 0; Sky.panY = 0;
+  Sky.projection = 'equidistant';
+  Sky.overlays = [];
+
+  /* Everything the sheet shows is asserted here, so what is on the screen
+     behind the panel cannot leak into the print. */
+  Modes.override = {
+    printChart: o.paper,
+    limMag: o.limMag,
+    starScale: o.starScale,
+    thinOut: false,
+    magToDso: false,
+    lines: o.conLines, lineBright: false,
+    bounds: o.bounds,
+    conNames: o.conNames, conNamesFull: false,
+    grid: false, gridLabels: false,
+    ecliptic: o.ecliptic, galactic: o.galactic,
+    refPoints: false,
+    dsos: o.dsos, dsoLabels: o.dsoLabels,
+    showM: true, showC: true, showOther: true,
+    starLabels: o.starNames,
+    hideStar: null, hideStars: null
+  };
+
+  /* drawSky installs the merged settings into OPT for the duration of a frame,
+     and the renderer reads OPT, not optMerged(). Calling drawLayers straight
+     skips that - which is why the first version of this sheet came out with a
+     black sky and coloured stars however firmly the print option was ticked.
+     Install it here the same way. */
+  var baseOpt = OPT;
+  OPT = optMerged();
+
+  try {
+    updateBasis();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = o.paper ? '#ffffff' : '#05060a';
+    ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+
+    /* Clip the sky to the horizon: below it there is ground, and a chart that
+       spills stars past the horizon circle is drawing what you cannot see. */
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(Sky.cx, Sky.cy, Sky.scale, 0, TAU);
+    ctx.clip();
+    drawLayers();
+    if (o.planets) skyPrintPlanets(ctx, p.dateMs, lst, ink, px);
+    if (o.equator) {
+      /* Drawn from the pole, so it is exact rather than sampled. */
+      ctx.strokeStyle = o.paper ? '#555' : '#57d5e8';
+      ctx.lineWidth = Math.max(1, px / 1100);
+      ctx.setLineDash([px / 220, px / 320]);
+      strokeVecLoop(circlePts(0, 90, 90, 360));
+      ctx.setLineDash([]);
+    }
+    ctx.restore();
+
+    if (o.azimuthRing) skyPrintRing(ctx, Sky.dec, lst, ink, px);
+
+    /* The caption, in the strip left under the circle. */
+    var cap = skyPrintCaption();
+    var f = Math.max(10, Math.round(px / 62));
+    ctx.fillStyle = ink;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.font = '600 ' + f + 'px ui-sans-serif, system-ui, sans-serif';
+    var base = px + f * 1.6;
+    ctx.fillText('Location  ' + cap.place, px * 0.04, base);
+    ctx.font = '400 ' + f + 'px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillText('Time  ' + cap.time + '     Sidereal time  ' + cap.lst,
+                 px * 0.04, base + f * 1.35);
+    ctx.textAlign = 'right';
+    ctx.fillText('Stars to magnitude ' + o.limMag.toFixed(1),
+                 px * 0.96, base + f * 1.35);
+  } finally {
+    OPT = baseOpt;
+    Sky.canvas = save.canvas; Sky.ctx = save.ctx;
+    Sky.w = save.w; Sky.h = save.h; Sky.dpr = save.dpr;
+    Sky.ra = save.ra; Sky.dec = save.dec; Sky.fov = save.fov;
+    Sky.roll = save.roll; Sky.projection = save.projection;
+    Sky.panX = save.panX; Sky.panY = save.panY;
+    Sky.overlays = save.overlays;
+    Modes.override = save.override;
+    updateBasis();
+    Sky.needsDraw = true;
+  }
+}
+
+/* A sheet as an image, at print resolution. */
+function skyPrintImage(px) {
+  px = px || SkyPrint.opts.size;
+  var c = document.createElement('canvas');
+  var capStrip = Math.round(px * 0.11);
+  c.width = px; c.height = px + capStrip;
+  skyPrintSheet(c.getContext('2d'), px);
+  return c;
+}
+
+/* ------------------------------------------------------------------- panel */
+
+function skyPrintCheckbox(key, label) {
+  return '<label class="spRow"><input type="checkbox" data-sp="' + key + '"' +
+         (SkyPrint.opts[key] ? ' checked' : '') + '> ' + esc(label) + '</label>';
+}
+
+function skyPrintPanelHTML() {
+  var p = skyPrintPlace(), o = SkyPrint.opts;
+  var iso = new Date(p.dateMs).toISOString().slice(0, 16);
+  return '' +
+    '<div id="spWrap">' +
+    '<div id="spSheet"><img id="spImg" alt="sky chart"></div>' +
+    '<div id="spSide">' +
+    '<div class="spHead">Sky chart<button class="btn sm" id="spClose">×</button></div>' +
+
+    '<h2>Where and when</h2>' +
+    '<div class="row2">' +
+    '<label class="note">Latitude °<input id="spLat" type="number" step="0.0001" ' +
+    'min="-89.5" max="89.5" value="' + p.lat + '"></label>' +
+    '<label class="note">Longitude ° E<input id="spLon" type="number" step="0.0001" ' +
+    'min="-180" max="180" value="' + p.lon + '"></label>' +
+    '</div>' +
+    '<label class="note" style="display:block;margin-top:6px">UTC date and time' +
+    '<input id="spDate" type="datetime-local" value="' + iso + '"></label>' +
+    '<div class="btnrow"><button class="btn sm" id="spNow">Now</button>' +
+    '<button class="btn sm" id="spHere">Use my location</button></div>' +
+
+    '<h2>What is drawn</h2>' +
+    skyPrintCheckbox('conLines', 'Constellation lines') +
+    skyPrintCheckbox('conNames', 'Constellation names') +
+    skyPrintCheckbox('bounds', 'Constellation boundaries') +
+    skyPrintCheckbox('equator', 'Celestial equator') +
+    skyPrintCheckbox('ecliptic', 'Ecliptic') +
+    skyPrintCheckbox('galactic', 'Galactic equator') +
+    skyPrintCheckbox('planets', 'Planets') +
+    skyPrintCheckbox('planetNames', '… named') +
+    skyPrintCheckbox('dsos', 'Deep-sky objects') +
+    skyPrintCheckbox('dsoLabels', '… named') +
+    skyPrintCheckbox('azimuthRing', 'Azimuth ring') +
+    skyPrintCheckbox('cardinals', '… as N E S W instead of degrees') +
+    skyPrintCheckbox('paper', 'Black on white, for printing') +
+
+    '<h2>Star names</h2>' +
+    '<select id="spNames">' +
+    [['none', 'None'], ['proper', 'Proper names'], ['bayer', 'Bayer letters'],
+     ['both', 'Both']].map(function (n) {
+      return '<option value="' + n[0] + '"' +
+             (o.starNames === n[0] ? ' selected' : '') + '>' + n[1] + '</option>';
+    }).join('') + '</select>' +
+
+    '<h2>Stars</h2>' +
+    '<label class="note">Faintest star visible <b id="spMagOut">' +
+    o.limMag.toFixed(2) + '</b>' +
+    '<input id="spMag" type="range" min="2" max="9" step="0.1" value="' + o.limMag + '">' +
+    '</label>' +
+    '<label class="note">How fast a star grows with brightness <b id="spScaleOut">' +
+    Math.round(o.starScale * 100) + '%</b>' +
+    '<input id="spScale" type="range" min="0.2" max="2" step="0.05" value="' + o.starScale + '">' +
+    '</label>' +
+
+    '<div class="btnrow" style="margin-top:10px">' +
+    '<button class="btn primary" id="spPrint">Print</button>' +
+    '<button class="btn sm" id="spPng">Save as an image</button>' +
+    '</div>' +
+    '<div class="note">The sheet prints at ' + o.size + ' pixels across, which is ' +
+    'about 170 to the inch on A4 — fine enough to measure an altitude off.</div>' +
+    '</div></div>';
+}
+
+function skyPrintRefresh() {
+  var img = el('spImg');
+  if (!img) return;
+  /* A smaller draw for the preview: the same sheet, quick enough to redraw on
+     every tick of a slider. */
+  img.src = skyPrintImage(900).toDataURL('image/png');
+}
+
+function skyPrintBind() {
+  var P = typeof Planetarium !== 'undefined' ? Planetarium : null;
+
+  qsAll('spSide', '[data-sp]').forEach(function (box) {
+    box.addEventListener('change', function () {
+      SkyPrint.opts[box.getAttribute('data-sp')] = box.checked;
+      skyPrintRefresh();
+    });
+  });
+
+  function num(id, apply) {
+    var n = el(id);
+    if (n) n.addEventListener('change', function () {
+      var v = parseFloat(this.value);
+      if (isFinite(v)) { apply(v); skyPrintRefresh(); }
+    });
+  }
+  num('spLat', function (v) { if (P) P.latitude = clamp(v, -89.5, 89.5); });
+  num('spLon', function (v) { if (P) P.longitude = clamp(v, -180, 180); });
+
+  var d = el('spDate');
+  if (d) d.addEventListener('change', function () {
+    var x = Date.parse(this.value + 'Z');
+    if (isFinite(x) && P) { P.dateMs = x; P.timeSource = 'clock'; skyPrintRefresh(); }
+  });
+
+  if (el('spNow')) el('spNow').addEventListener('click', function () {
+    if (!P) return;
+    P.dateMs = Date.now(); P.timeSource = 'clock';
+    el('spDate').value = new Date(P.dateMs).toISOString().slice(0, 16);
+    skyPrintRefresh();
+  });
+
+  if (el('spHere')) el('spHere').addEventListener('click', function () {
+    if (!navigator.geolocation || !P) return;
+    var btn = this;
+    btn.textContent = 'Asking…';
+    navigator.geolocation.getCurrentPosition(function (pos) {
+      P.latitude = clamp(pos.coords.latitude, -89.5, 89.5);
+      P.longitude = clamp(pos.coords.longitude, -180, 180);
+      el('spLat').value = P.latitude.toFixed(4);
+      el('spLon').value = P.longitude.toFixed(4);
+      btn.textContent = 'Use my location';
+      skyPrintRefresh();
+    }, function () { btn.textContent = 'Not allowed'; });
+  });
+
+  if (el('spNames')) el('spNames').addEventListener('change', function () {
+    SkyPrint.opts.starNames = this.value; skyPrintRefresh();
+  });
+
+  function slider(id, outId, apply, fmt) {
+    var n = el(id);
+    if (!n) return;
+    n.addEventListener('input', function () {
+      var v = parseFloat(this.value);
+      apply(v);
+      el(outId).textContent = fmt(v);
+      skyPrintRefresh();
+    });
+  }
+  slider('spMag', 'spMagOut', function (v) { SkyPrint.opts.limMag = v; },
+         function (v) { return v.toFixed(2); });
+  slider('spScale', 'spScaleOut', function (v) { SkyPrint.opts.starScale = v; },
+         function (v) { return Math.round(v * 100) + '%'; });
+
+  if (el('spPrint')) el('spPrint').addEventListener('click', skyPrintNow);
+  if (el('spPng')) el('spPng').addEventListener('click', function () {
+    var c = skyPrintImage();
+    var a = document.createElement('a');
+    a.download = 'sky-chart.png';
+    a.href = c.toDataURL('image/png');
+    a.click();
+  });
+  if (el('spClose')) el('spClose').addEventListener('click', skyPrintClose);
+}
+
+function skyPrintOpen() {
+  if (SkyPrint.open) return;
+  SkyPrint.open = true;
+  var wrap = document.createElement('div');
+  wrap.id = 'spOverlay';
+  wrap.innerHTML = skyPrintPanelHTML();
+  document.body.appendChild(wrap);
+  skyPrintBind();
+  skyPrintRefresh();
+}
+
+function skyPrintClose() {
+  var n = el('spOverlay');
+  if (n) n.remove();
+  SkyPrint.open = false;
+  Sky.needsDraw = true;
+}
+
+/* Printing: the sheet at full resolution, alone on the page. Everything else
+   is hidden by the print stylesheet rather than torn down, so closing the
+   dialogue leaves the app exactly as it was. */
+function skyPrintNow() {
+  var holder = el('printSheet');
+  if (!holder) {
+    holder = document.createElement('div');
+    holder.id = 'printSheet';
+    document.body.appendChild(holder);
+  }
+  holder.innerHTML = '';
+  var img = new Image();
+  img.src = skyPrintImage().toDataURL('image/png');
+  holder.appendChild(img);
+  var go = function () { window.print(); };
+  if (img.complete) go(); else img.onload = go;
+}
+
 /* ---- what the shared engine reads by name ---- */
 window.persist = persist;
 window.drawToolsOverlay = drawToolsOverlay;
@@ -21635,6 +22145,9 @@ window.SGP = {
   paper61ChartPlanets: paper61ChartPlanets,
   /* One definition of "which stars", checkable from outside. */
   STAR_HAS_TWIN: STAR_HAS_TWIN, doubleBayerTwin: doubleBayerTwin,
+  /* The printable sky chart, so its geometry can be checked from outside. */
+  SkyPrint: SkyPrint, skyPrintOpen: skyPrintOpen, skyPrintClose: skyPrintClose,
+  skyPrintNow: skyPrintNow, skyPrintImage: skyPrintImage, skyPrintSheet: skyPrintSheet,
   starRelevant: starRelevant, STAR_CATS: STAR_CATS, starCatFn: starCatFn,
   authScreenHTML: function () { return authScreenHTML(''); },
   authResetScreenHTML: authResetScreenHTML, authHashParams: authHashParams,
