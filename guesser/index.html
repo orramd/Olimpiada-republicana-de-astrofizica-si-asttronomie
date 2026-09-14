@@ -136,7 +136,13 @@
 @media print{html.ui-desktop body > *{ display: none !important; }html.ui-desktop body > #printSheet{ display: block !important; position: static; margin: 0; }html.ui-desktop #printSheet img{ width: 100%; height: auto; }
   @page{ size: A4 portrait; margin: 10mm; }
 }html.ui-desktop #spSide #spMap{ width: 100%; height: auto; display: block; border-radius: 6px;
-  border: 1px solid var(--line, #222b3d); cursor: crosshair; margin-top: 6px; }
+  border: 1px solid var(--line, #222b3d); cursor: crosshair; margin-top: 6px; }html.ui-desktop #spMapModal{ position: fixed; inset: 0; z-index: 1000; background: rgba(3,5,10,.86);
+  display: flex; align-items: center; justify-content: center; }html.ui-desktop #spMapBig{ background: var(--panel, #0c1018); border: 1px solid var(--line, #222b3d);
+  border-radius: 12px; padding: 12px; max-width: min(96vw, 1060px); }html.ui-desktop #spMapBig .spMapHead{ display: flex; align-items: baseline; gap: 12px;
+  margin-bottom: 8px; font: 600 16px/1.3 ui-sans-serif, system-ui, sans-serif;
+  color: var(--fg, #e9edf7); }html.ui-desktop #spMapBig .spMapHead .note{ margin-left: auto; }html.ui-desktop #spMapBig canvas{ width: min(94vw, 1000px); height: auto; display: block;
+  border-radius: 8px; border: 1px solid var(--line, #222b3d); cursor: crosshair;
+  touch-action: none; }
 
 html.ui-mobile *,html.ui-mobile *::before,html.ui-mobile *::after{ box-sizing: border-box; -webkit-tap-highlight-color: transparent; }html.ui-mobile,html.ui-mobile body{
   height: 100%; margin: 0; overscroll-behavior: none;
@@ -21867,10 +21873,27 @@ function skyPrintPlanets(ctx, dateMs, lst, ink, px) {
 
 /* The sheet: chart, ring, caption. ctx is expected to be sized px by px plus
    room underneath for the caption. */
+/* The size the sheet is laid out at, whatever size it is rendered at.
+
+   This is the whole reason the print did not match the preview. A star's disc,
+   a label's font and a line's width are all fixed numbers of pixels in the
+   renderer: draw the same chart into a 2000-pixel canvas instead of a 900-pixel
+   one and the sky is 2.2 times bigger while every star and every letter on it
+   stays the size it was. The preview looked right and the print came out with
+   tiny sparse stars - the same chart, drawn to two different rules.
+
+   So the layout is always done at SHEET_BASE and the canvas transform carries
+   it up to whatever the paper wants. Canvas scales the drawing, not the
+   drawing's description, so the print is crisp at full resolution and pixel
+   for pixel the same picture as the preview. It is the same trick the app
+   already uses for high-density screens, where it is called Sky.dpr. */
+var SHEET_BASE = 900;
+
 function skyPrintSheet(ctx, px) {
   var o = SkyPrint.opts, p = skyPrintPlace();
   var lst = skyPrintLst();
   var ink = o.paper ? '#101010' : '#c8cfdd';
+  var k = px / SHEET_BASE;
 
   /* Point the app's own renderer at the zenith of that place and moment. */
   var save = {
@@ -21882,8 +21905,8 @@ function skyPrintSheet(ctx, px) {
 
   Sky.canvas = ctx.canvas;
   Sky.ctx = ctx;
-  Sky.w = px; Sky.h = px;
-  Sky.dpr = 1;
+  Sky.w = SHEET_BASE; Sky.h = SHEET_BASE;
+  Sky.dpr = k;
   Sky.ra = lst;
   Sky.dec = clamp(p.lat, -89.5, 89.5);
   Sky.fov = skyChartFov();
@@ -21922,9 +21945,10 @@ function skyPrintSheet(ctx, px) {
 
   try {
     updateBasis();
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    /* Everything below is in sheet coordinates; the transform does the rest. */
+    ctx.setTransform(k, 0, 0, k, 0, 0);
     ctx.fillStyle = o.paper ? '#ffffff' : '#05060a';
-    ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    ctx.fillRect(0, 0, ctx.canvas.width / k, ctx.canvas.height / k);
 
     /* Clip the sky to the horizon: below it there is ground, and a chart that
        spills stars past the horizon circle is drawing what you cannot see. */
@@ -21933,34 +21957,34 @@ function skyPrintSheet(ctx, px) {
     ctx.arc(Sky.cx, Sky.cy, Sky.scale, 0, TAU);
     ctx.clip();
     drawLayers();
-    if (o.planets) skyPrintPlanets(ctx, p.dateMs, lst, ink, px);
+    if (o.planets) skyPrintPlanets(ctx, p.dateMs, lst, ink, SHEET_BASE);
     if (o.equator) {
       /* Drawn from the pole, so it is exact rather than sampled. */
       ctx.strokeStyle = o.paper ? '#555' : '#57d5e8';
-      ctx.lineWidth = Math.max(1, px / 1100);
-      ctx.setLineDash([px / 220, px / 320]);
+      ctx.lineWidth = Math.max(1, SHEET_BASE / 1100);
+      ctx.setLineDash([SHEET_BASE / 220, SHEET_BASE / 320]);
       strokeVecLoop(circlePts(0, 90, 90, 360));
       ctx.setLineDash([]);
     }
     ctx.restore();
 
-    if (o.azimuthRing || o.horizon) skyPrintRing(ctx, Sky.dec, lst, ink, px);
+    if (o.azimuthRing || o.horizon) skyPrintRing(ctx, Sky.dec, lst, ink, SHEET_BASE);
 
     /* The caption, in the strip left under the circle. */
     var cap = skyPrintCaption();
-    var f = Math.max(10, Math.round(px / 62));
+    var f = Math.max(10, Math.round(SHEET_BASE / 62));
     ctx.fillStyle = ink;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
     ctx.font = '600 ' + f + 'px ui-sans-serif, system-ui, sans-serif';
-    var base = px + f * 1.6;
-    ctx.fillText('Location  ' + cap.place, px * 0.04, base);
+    var base = SHEET_BASE + f * 1.6;
+    ctx.fillText('Location  ' + cap.place, SHEET_BASE * 0.04, base);
     ctx.font = '400 ' + f + 'px ui-sans-serif, system-ui, sans-serif';
     ctx.fillText('Time  ' + cap.time + '     Sidereal time  ' + cap.lst,
-                 px * 0.04, base + f * 1.35);
+                 SHEET_BASE * 0.04, base + f * 1.35);
     ctx.textAlign = 'right';
     ctx.fillText('Stars to magnitude ' + o.limMag.toFixed(1),
-                 px * 0.96, base + f * 1.35);
+                 SHEET_BASE * 0.96, base + f * 1.35);
   } finally {
     OPT = baseOpt;
     Sky.canvas = save.canvas; Sky.ctx = save.ctx;
@@ -21985,6 +22009,25 @@ function skyPrintImage(px) {
   return c;
 }
 
+/* Are two renderings of the sheet the same picture at different sizes? The
+   print and the preview have to be, and were not. */
+function skyPrintSameAtAnySize(a, b) {
+  var ca = skyPrintImage(a), cb = skyPrintImage(b);
+  var small = a < b ? ca : cb, large = a < b ? cb : ca;
+  var w = small.width, h = small.height;
+  var tmp = document.createElement('canvas');
+  tmp.width = w; tmp.height = h;
+  var t = tmp.getContext('2d');
+  t.drawImage(large, 0, 0, w, h);
+  var A = small.getContext('2d').getImageData(0, 0, w, h).data;
+  var B = t.getImageData(0, 0, w, h).data;
+  var diff = 0;
+  for (var i = 0; i < A.length; i += 4) {
+    if (Math.abs(A[i] - B[i]) > 60) diff++;
+  }
+  return { pixels: w * h, differing: diff, fraction: diff / (w * h) };
+}
+
 
 /* ------------------------------------------------------------------- the map
 
@@ -22002,13 +22045,45 @@ function skyPrintImage(px) {
 
 var SKY_MAP_W = 300, SKY_MAP_H = 150;
 
-function skyMapDraw() {
-  var c = el('spMap');
+/* What part of the world is on screen. The thumbnail in the panel always shows
+   the whole of it; the big one opens on the same view and can then be zoomed
+   and dragged, because picking a place to a tenth of a degree off a map three
+   hundred pixels wide is asking for a steady hand and some luck. */
+var SkyMapView = { zoom: 1, lon: 0, lat: 0 };
+
+function skyMapClampView() {
+  var v = SkyMapView;
+  v.zoom = clamp(v.zoom, 1, 40);
+  /* Never past the edges: half a screen's worth of world, in each direction. */
+  var halfLon = 180 / v.zoom, halfLat = 90 / v.zoom;
+  v.lon = clamp(v.lon, -180 + halfLon, 180 - halfLon);
+  v.lat = clamp(v.lat, -90 + halfLat, 90 - halfLat);
+}
+
+/* The projection for a given canvas: whole world when `whole`, the current
+   view otherwise. */
+function skyMapFrame(c, whole) {
+  var w = c.width, h = c.height;
+  var v = SkyMapView;
+  var z = whole ? 1 : v.zoom;
+  var clon = whole ? 0 : v.lon, clat = whole ? 0 : v.lat;
+  var spanLon = 360 / z, spanLat = 180 / z;
+  return {
+    w: w, h: h, spanLon: spanLon, spanLat: spanLat,
+    x: function (lon) { return (lon - (clon - spanLon / 2)) / spanLon * w; },
+    y: function (lat) { return ((clat + spanLat / 2) - lat) / spanLat * h; },
+    lon: function (px) { return clon - spanLon / 2 + px / w * spanLon; },
+    lat: function (py) { return clat + spanLat / 2 - py / h * spanLat; }
+  };
+}
+
+function skyMapDraw(id, whole) {
+  var c = el(id || 'spMap');
   if (!c) return;
   var ctx = c.getContext('2d');
-  var w = c.width, h = c.height;
-  var x = function (lon) { return (lon + 180) / 360 * w; };
-  var y = function (lat) { return (90 - lat) / 180 * h; };
+  var fr = skyMapFrame(c, whole !== false && (id || 'spMap') === 'spMap');
+  var w = fr.w, h = fr.h;
+  var x = fr.x, y = fr.y;
 
   ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = '#0b1220';                       // the sea
@@ -22054,10 +22129,16 @@ function skyMapDraw() {
   ctx.lineWidth = 1;
   ctx.strokeStyle = 'rgba(120,140,180,0.22)';
   ctx.beginPath();
-  for (var lon = -180; lon <= 180; lon += 30) {
+  /* Coarse when the whole world is in view, finer as you go in - a graticule
+     every thirty degrees is useless at a zoom where thirty degrees is off the
+     side of the canvas. */
+  var stepLon = fr.spanLon > 180 ? 30 : fr.spanLon > 60 ? 10 :
+                fr.spanLon > 20 ? 5 : fr.spanLon > 8 ? 2 : 1;
+  var stepLat = stepLon / 2 < 1 ? stepLon : stepLon / 2;
+  for (var lon = -180; lon <= 180; lon += stepLon) {
     ctx.moveTo(x(lon) + 0.5, 0); ctx.lineTo(x(lon) + 0.5, h);
   }
-  for (var lat = -75; lat <= 75; lat += 15) {
+  for (var lat = -90; lat <= 90; lat += stepLat) {
     ctx.moveTo(0, y(lat) + 0.5); ctx.lineTo(w, y(lat) + 0.5);
   }
   ctx.stroke();
@@ -22078,11 +22159,19 @@ function skyMapDraw() {
 
   /* The places the app already knows. */
   if (typeof MOCK_SITES !== 'undefined') {
-    ctx.fillStyle = '#55637f';
+    var dot = Math.max(1.8, Math.min(4, w / 170));
+    ctx.fillStyle = '#8b9bbd';
+    ctx.font = Math.round(dot * 3.2) + 'px ui-sans-serif, system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
     MOCK_SITES.forEach(function (site) {
+      var sx = x(site[2]), sy = y(site[1]);
+      if (sx < -20 || sx > w + 20 || sy < -20 || sy > h + 20) return;
       ctx.beginPath();
-      ctx.arc(x(site[2]), y(site[1]), 1.8, 0, TAU);
+      ctx.arc(sx, sy, dot, 0, TAU);
       ctx.fill();
+      /* Named only on the big map, where there is room for it. */
+      if (w > 400) ctx.fillText(site[0], sx + dot * 1.8, sy);
     });
   }
 
@@ -22092,13 +22181,14 @@ function skyMapDraw() {
   ctx.fillStyle = '#ffc14d';
   ctx.lineWidth = 1.4;
   var px = x(p.lon), py = y(p.lat);
-  ctx.beginPath(); ctx.arc(px, py, 4, 0, TAU); ctx.stroke();
-  ctx.beginPath(); ctx.arc(px, py, 1.2, 0, TAU); ctx.fill();
+  var r = Math.max(4, Math.min(9, w / 90));
+  ctx.beginPath(); ctx.arc(px, py, r, 0, TAU); ctx.stroke();
+  ctx.beginPath(); ctx.arc(px, py, r * 0.3, 0, TAU); ctx.fill();
   ctx.beginPath();
-  ctx.moveTo(px - 8, py); ctx.lineTo(px - 5, py);
-  ctx.moveTo(px + 5, py); ctx.lineTo(px + 8, py);
-  ctx.moveTo(px, py - 8); ctx.lineTo(px, py - 5);
-  ctx.moveTo(px, py + 5); ctx.lineTo(px, py + 8);
+  ctx.moveTo(px - r * 2, py); ctx.lineTo(px - r * 1.25, py);
+  ctx.moveTo(px + r * 1.25, py); ctx.lineTo(px + r * 2, py);
+  ctx.moveTo(px, py - r * 2); ctx.lineTo(px, py - r * 1.25);
+  ctx.moveTo(px, py + r * 1.25); ctx.lineTo(px, py + r * 2);
   ctx.stroke();
 }
 
@@ -22125,37 +22215,122 @@ function skyMapLabel() {
   return txt;
 }
 
+/* The big one: same map, room to work, and a wheel that zooms. */
+function skyMapBigHTML() {
+  return '<div id="spMapBig">' +
+    '<div class="spMapHead">Where are you observing from?' +
+    '<span class="note" id="spMapWhere">' + esc(skyMapLabel()) + '</span>' +
+    '<button class="btn sm" id="spMapDone">Done</button></div>' +
+    '<canvas id="spMapCanvas" width="1000" height="500"></canvas>' +
+    '<div class="note">Click to put yourself there · drag to move · ' +
+    'scroll to zoom · double-click to fit the world</div></div>';
+}
+
+function skyMapBigOpen() {
+  if (el('spMapBig')) return;
+  var wrap = document.createElement('div');
+  wrap.id = 'spMapModal';
+  wrap.innerHTML = skyMapBigHTML();
+  document.body.appendChild(wrap);
+
+  var c = el('spMapCanvas');
+  var P = typeof Planetarium !== 'undefined' ? Planetarium : null;
+  /* Open looking at wherever the observer already is. */
+  SkyMapView.lon = P ? P.longitude : 0;
+  SkyMapView.lat = P ? P.latitude : 0;
+  SkyMapView.zoom = 3;
+  skyMapClampView();
+  skyMapDraw('spMapCanvas', false);
+
+  function place(e, moved) {
+    if (!P || moved) return;
+    var r = c.getBoundingClientRect();
+    var fr = skyMapFrame(c, false);
+    P.longitude = clamp(fr.lon((e.clientX - r.left) / r.width * c.width), -180, 180);
+    P.latitude = clamp(fr.lat((e.clientY - r.top) / r.height * c.height), -89.5, 89.5);
+    skyMapAfterMove();
+  }
+
+  var drag = null, movedBy = 0;
+  c.addEventListener('pointerdown', function (e) {
+    drag = { x: e.clientX, y: e.clientY };
+    movedBy = 0;
+  });
+  window.addEventListener('pointermove', function (e) {
+    if (!drag) return;
+    var r = c.getBoundingClientRect();
+    var fr = skyMapFrame(c, false);
+    var dx = (e.clientX - drag.x) / r.width * fr.spanLon;
+    var dy = (e.clientY - drag.y) / r.height * fr.spanLat;
+    movedBy += Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y);
+    SkyMapView.lon -= dx;
+    SkyMapView.lat += dy;
+    drag = { x: e.clientX, y: e.clientY };
+    skyMapClampView();
+    skyMapDraw('spMapCanvas', false);
+  });
+  window.addEventListener('pointerup', function (e) {
+    if (drag) place(e, movedBy > 4);
+    drag = null;
+  });
+
+  c.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    var r = c.getBoundingClientRect();
+    var fr = skyMapFrame(c, false);
+    /* Zoom about the cursor: what is under it stays under it. */
+    var lon = fr.lon((e.clientX - r.left) / r.width * c.width);
+    var lat = fr.lat((e.clientY - r.top) / r.height * c.height);
+    var before = SkyMapView.zoom;
+    SkyMapView.zoom = clamp(before * (e.deltaY < 0 ? 1.25 : 0.8), 1, 40);
+    skyMapClampView();
+    var after = skyMapFrame(c, false);
+    SkyMapView.lon += lon - after.lon((e.clientX - r.left) / r.width * c.width);
+    SkyMapView.lat += lat - after.lat((e.clientY - r.top) / r.height * c.height);
+    skyMapClampView();
+    skyMapDraw('spMapCanvas', false);
+  }, { passive: false });
+
+  c.addEventListener('dblclick', function () {
+    SkyMapView.zoom = 1; SkyMapView.lon = 0; SkyMapView.lat = 0;
+    skyMapDraw('spMapCanvas', false);
+  });
+
+  el('spMapDone').addEventListener('click', skyMapBigClose);
+  wrap.addEventListener('click', function (e) {
+    if (e.target === wrap) skyMapBigClose();
+  });
+}
+
+function skyMapBigClose() {
+  var n = el('spMapModal');
+  if (n) n.remove();
+}
+
+/* Everything that has to follow the observer moving, wherever it moved from. */
+function skyMapAfterMove() {
+  var P = typeof Planetarium !== 'undefined' ? Planetarium : null;
+  if (!P) return;
+  if (el('spLat')) el('spLat').value = P.latitude.toFixed(4);
+  if (el('spLon')) el('spLon').value = P.longitude.toFixed(4);
+  if (el('spWhere')) el('spWhere').textContent = skyMapLabel();
+  if (el('spMapWhere')) el('spMapWhere').textContent = skyMapLabel();
+  if (SkyPrint.opts.tzAuto) {
+    if (el('spDate')) el('spDate').value = skyLocalIso(P.dateMs);
+    if (el('spTz')) el('spTz').innerHTML = skyTzOptions();
+  }
+  skyMapDraw('spMap', true);
+  if (el('spMapCanvas')) skyMapDraw('spMapCanvas', false);
+  skyPrintRefresh();
+}
+
 function skyMapBind() {
   var c = el('spMap');
   if (!c) return;
-  var P = typeof Planetarium !== 'undefined' ? Planetarium : null;
-  function pick(e) {
-    if (!P) return;
-    var r = c.getBoundingClientRect();
-    var fx = (e.clientX - r.left) / r.width;
-    var fy = (e.clientY - r.top) / r.height;
-    P.longitude = clamp(fx * 360 - 180, -180, 180);
-    P.latitude = clamp(90 - fy * 180, -89.5, 89.5);
-    if (el('spLat')) el('spLat').value = P.latitude.toFixed(4);
-    if (el('spLon')) el('spLon').value = P.longitude.toFixed(4);
-    if (el('spWhere')) el('spWhere').textContent = skyMapLabel();
-    if (SkyPrint.opts.tzAuto) {
-      if (el('spDate')) el('spDate').value = skyLocalIso(P.dateMs);
-      if (el('spTz')) el('spTz').innerHTML = skyTzOptions();
-    }
-    skyMapDraw();
-    skyPrintRefresh();
-  }
-  c.addEventListener('pointerdown', function (e) {
-    pick(e);
-    var move = function (ev) { pick(ev); };
-    var up = function () {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
-  });
+  /* The thumbnail is a button, not a target: three hundred pixels of world is
+     a degree and a half to the pixel, and nobody can put themselves within ten
+     kilometres of anywhere at that scale. Clicking it opens the big one. */
+  c.addEventListener('click', skyMapBigOpen);
 }
 
 /* ------------------------------------------------------------------- panel */
@@ -22189,7 +22364,7 @@ function skyPrintPanelHTML() {
     '<div id="spWrap">' +
     '<div id="spSheet"><img id="spImg" alt="sky chart"></div>' +
     '<div id="spSide">' +
-    '<div class="spHead">Sky chart<button class="btn sm" id="spClose">×</button></div>' +
+    '<div class="spHead">Print a chart<button class="btn sm" id="spClose">×</button></div>' +
 
     '<h2>Where and when</h2>' +
     '<div class="row2">' +
@@ -22264,7 +22439,7 @@ function skyPrintRefresh() {
 
 function skyPrintBind() {
   var P = typeof Planetarium !== 'undefined' ? Planetarium : null;
-  skyMapDraw();
+  skyMapDraw('spMap', true);
   skyMapBind();
 
   qsAll('spSide', '[data-sp]').forEach(function (box) {
@@ -22283,7 +22458,7 @@ function skyPrintBind() {
   }
   function afterPlace() {
     if (el('spWhere')) el('spWhere').textContent = skyMapLabel();
-    skyMapDraw();
+    skyMapDraw('spMap', true);
     /* On automatic the zone follows the place, so the clock you typed keeps
        meaning the same thing where you have just put yourself. */
     if (SkyPrint.opts.tzAuto) {
@@ -22348,7 +22523,7 @@ function skyPrintBind() {
       el('spLat').value = P.latitude.toFixed(4);
       el('spLon').value = P.longitude.toFixed(4);
       if (el('spWhere')) el('spWhere').textContent = skyMapLabel();
-      skyMapDraw();
+      skyMapDraw('spMap', true);
       btn.textContent = 'Use my location';
       skyPrintRefresh();
     }, function () { btn.textContent = 'Not allowed'; });
@@ -22448,8 +22623,11 @@ Modes.defs.chart = {
   var b = document.createElement('button');
   b.className = 'tab';
   b.dataset.mode = 'chart';
-  b.textContent = 'Sky chart';
-  b.title = 'A printable all-sky chart — Shift+S';
+  /* Not "Sky chart": that is the memorisation round two tabs to the left,
+     and two tabs of the same name is a coin toss every time you reach for
+     one. This one makes a chart to print. */
+  b.textContent = 'Print a chart';
+  b.title = 'An all-sky chart of a place and a moment, to print — Shift+S';
   /* Bound here rather than left to the boot sweep over .tab[data-mode]: a tab
      added by a later file than the one that does the sweep is not in it, and a
      tab that does nothing when you press it is worse than no tab. */
@@ -23019,6 +23197,7 @@ window.SGP = {
   /* The printable sky chart, so its geometry can be checked from outside. */
   SkyPrint: SkyPrint, skyPrintOpen: skyPrintOpen, skyPrintClose: skyPrintClose,
   skyPrintNow: skyPrintNow, skyPrintImage: skyPrintImage, skyPrintSheet: skyPrintSheet,
+  skyPrintSameAtAnySize: skyPrintSameAtAnySize,
   starRelevant: starRelevant, STAR_CATS: STAR_CATS, starCatFn: starCatFn,
   authScreenHTML: function () { return authScreenHTML(''); },
   authResetScreenHTML: authResetScreenHTML, authHashParams: authHashParams,
