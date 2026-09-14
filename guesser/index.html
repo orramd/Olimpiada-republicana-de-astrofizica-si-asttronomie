@@ -21679,6 +21679,8 @@ var SkyPrint = {
     dsos: false,
     dsoLabels: false,
     paper: true,          /* black on white, which is what a printer wants */
+  tzMin: 0,             /* minutes east of Greenwich for the clock you type */
+  tzAuto: true,         /* …derived from the longitude until you set it */
   horizon: true,        /* the horizon circle itself, whether or not the ring
                            of degrees is drawn round it */
     limMag: 5.5,
@@ -21688,6 +21690,52 @@ var SkyPrint = {
   },
   open: false
 };
+
+/* ------------------------------------------------------------- time zones
+
+   The moment is stored as UTC, because that is what the sky is computed from.
+   What you type is another matter: every other program asks for the local
+   clock - Stellarium, Heavens-Above and Cartes du Ciel all do - and a chart
+   for "01:15" at Hanoi means a quarter past one in the morning there, not
+   a quarter past one in Greenwich, which is a quarter past eight in the
+   morning and broad daylight.
+
+   Typing a local time into a box labelled UTC put seven hours and a hundred
+   and five degrees of sky between this chart and the same chart drawn by
+   Stellarium. So the box means local time, and the zone is set beside it.
+
+   The default is the zone the longitude implies - fifteen degrees to the hour,
+   which is what "unnamed location" means on Heavens-Above - and it follows the
+   longitude about until you set it yourself. Whole-hour offsets only: this is
+   an observing chart, not a railway timetable, and the half-hour zones matter
+   to the clock rather than to where Saturn is. */
+function skyTzAuto(lon) {
+  return Math.round(clamp(lon, -180, 180) / 15) * 60;
+}
+
+function skyTzMinutes() {
+  var o = SkyPrint.opts;
+  if (o.tzAuto) return skyTzAuto(skyPrintPlace().lon);
+  return o.tzMin;
+}
+
+function skyTzLabel(min) {
+  var sign = min < 0 ? '-' : '+';
+  var a = Math.abs(min);
+  return 'UTC' + sign + String(Math.floor(a / 60)) +
+         (a % 60 ? ':' + ('0' + (a % 60)).slice(-2) : '');
+}
+
+/* The local clock, as an ISO string a datetime-local input understands. */
+function skyLocalIso(ms) {
+  return new Date(ms + skyTzMinutes() * 60000).toISOString().slice(0, 16);
+}
+
+/* And back: what was typed, read as local, returned as UTC. */
+function skyLocalToUtc(text) {
+  var x = Date.parse(text + 'Z');
+  return isFinite(x) ? x - skyTzMinutes() * 60000 : NaN;
+}
 
 function skyPrintLst() {
   return typeof Planetarium !== 'undefined'
@@ -21708,11 +21756,16 @@ function skyPrintPlace() {
 function skyPrintCaption() {
   var p = skyPrintPlace();
   var ns = p.lat >= 0 ? 'N' : 'S', ew = p.lon >= 0 ? 'E' : 'W';
-  var when = new Date(p.dateMs).toISOString().slice(0, 16).replace('T', ' ');
+  var tz = skyTzMinutes();
+  var local = skyLocalIso(p.dateMs).replace('T', ' ');
+  var utc = new Date(p.dateMs).toISOString().slice(0, 16).replace('T', ' ');
   return {
     place: Math.abs(p.lat).toFixed(4) + '° ' + ns + '  ' +
            Math.abs(p.lon).toFixed(4) + '° ' + ew,
-    time: when + ' UTC',
+    /* Both, always. A chart with one time on it is a chart somebody will read
+       in the wrong zone. */
+    time: tz === 0 ? utc + ' UTC'
+                   : local + '  ' + skyTzLabel(tz) + '   (' + utc + ' UTC)',
     lst: fmtRA(skyPrintLst())
   };
 }
@@ -22049,6 +22102,10 @@ function skyMapBind() {
     if (el('spLat')) el('spLat').value = P.latitude.toFixed(4);
     if (el('spLon')) el('spLon').value = P.longitude.toFixed(4);
     if (el('spWhere')) el('spWhere').textContent = skyMapLabel();
+    if (SkyPrint.opts.tzAuto) {
+      if (el('spDate')) el('spDate').value = skyLocalIso(P.dateMs);
+      if (el('spTz')) el('spTz').innerHTML = skyTzOptions();
+    }
     skyMapDraw();
     skyPrintRefresh();
   }
@@ -22066,6 +22123,23 @@ function skyMapBind() {
 
 /* ------------------------------------------------------------------- panel */
 
+/* Whole hours from -12 to +14, plus the two the app can work out for you. */
+function skyTzOptions() {
+  var o = SkyPrint.opts, now = skyTzMinutes(), out = [];
+  out.push('<option value="auto"' + (o.tzAuto ? ' selected' : '') + '>' +
+           'From the longitude (' + skyTzLabel(skyTzAuto(skyPrintPlace().lon)) + ')</option>');
+  var here = -new Date().getTimezoneOffset();
+  out.push('<option value="here"' + (!o.tzAuto && o.tzMin === here ? ' selected' : '') + '>' +
+           'This computer (' + skyTzLabel(here) + ')</option>');
+  for (var h = -12; h <= 14; h++) {
+    var m = h * 60;
+    out.push('<option value="' + m + '"' +
+             (!o.tzAuto && o.tzMin === m && m !== here ? ' selected' : '') + '>' +
+             skyTzLabel(m) + '</option>');
+  }
+  return out.join('');
+}
+
 function skyPrintCheckbox(key, label) {
   return '<label class="spRow"><input type="checkbox" data-sp="' + key + '"' +
          (SkyPrint.opts[key] ? ' checked' : '') + '> ' + esc(label) + '</label>';
@@ -22073,7 +22147,7 @@ function skyPrintCheckbox(key, label) {
 
 function skyPrintPanelHTML() {
   var p = skyPrintPlace(), o = SkyPrint.opts;
-  var iso = new Date(p.dateMs).toISOString().slice(0, 16);
+  var iso = skyLocalIso(p.dateMs);
   return '' +
     '<div id="spWrap">' +
     '<div id="spSheet"><img id="spImg" alt="sky chart"></div>' +
@@ -22087,8 +22161,13 @@ function skyPrintPanelHTML() {
     '<label class="note">Longitude ° E<input id="spLon" type="number" step="0.0001" ' +
     'min="-180" max="180" value="' + p.lon + '"></label>' +
     '</div>' +
-    '<label class="note" style="display:block;margin-top:6px">UTC date and time' +
+    '<label class="note" style="display:block;margin-top:6px">Date and local time' +
     '<input id="spDate" type="datetime-local" value="' + iso + '"></label>' +
+    '<div class="row2" style="margin-top:4px">' +
+    '<label class="note">Time zone<select id="spTz">' + skyTzOptions() + '</select></label>' +
+    '<label class="note">Is UTC<input id="spUtcOut" type="text" readonly value="' +
+    new Date(p.dateMs).toISOString().slice(0, 16).replace('T', ' ') + '"></label>' +
+    '</div>' +
     '<canvas id="spMap" width="' + SKY_MAP_W + '" height="' + SKY_MAP_H + '" ' +
     'title="Click or drag to put the observer somewhere"></canvas>' +
     '<div class="note" id="spWhere">' + esc(skyMapLabel()) + '</div>' +
@@ -22168,20 +22247,57 @@ function skyPrintBind() {
   function afterPlace() {
     if (el('spWhere')) el('spWhere').textContent = skyMapLabel();
     skyMapDraw();
+    /* On automatic the zone follows the place, so the clock you typed keeps
+       meaning the same thing where you have just put yourself. */
+    if (SkyPrint.opts.tzAuto) {
+      if (el('spDate') && P) el('spDate').value = skyLocalIso(P.dateMs);
+      if (el('spTz')) el('spTz').innerHTML = skyTzOptions();
+    }
   }
   num('spLat', function (v) { if (P) P.latitude = clamp(v, -89.5, 89.5); afterPlace(); });
   num('spLon', function (v) { if (P) P.longitude = clamp(v, -180, 180); afterPlace(); });
 
+  function showUtc() {
+    if (el('spUtcOut') && P) {
+      el('spUtcOut').value =
+        new Date(P.dateMs).toISOString().slice(0, 16).replace('T', ' ');
+    }
+  }
+
   var d = el('spDate');
   if (d) d.addEventListener('change', function () {
-    var x = Date.parse(this.value + 'Z');
-    if (isFinite(x) && P) { P.dateMs = x; P.timeSource = 'clock'; skyPrintRefresh(); }
+    var x = skyLocalToUtc(this.value);
+    if (isFinite(x) && P) {
+      P.dateMs = x; P.timeSource = 'clock';
+      showUtc(); skyPrintRefresh();
+    }
+  });
+
+  var tz = el('spTz');
+  if (tz) tz.addEventListener('change', function () {
+    var v = this.value;
+    /* The instant stays put and the clock re-reads: changing zone should not
+       move the sky, it should relabel it. */
+    if (v === 'auto') { SkyPrint.opts.tzAuto = true; }
+    else if (v === 'here') {
+      SkyPrint.opts.tzAuto = false;
+      SkyPrint.opts.tzMin = -new Date().getTimezoneOffset();
+    } else {
+      SkyPrint.opts.tzAuto = false;
+      SkyPrint.opts.tzMin = parseInt(v, 10) || 0;
+    }
+    if (el('spDate') && P) el('spDate').value = skyLocalIso(P.dateMs);
+    showUtc();
+    skyPrintRefresh();
   });
 
   if (el('spNow')) el('spNow').addEventListener('click', function () {
     if (!P) return;
     P.dateMs = Date.now(); P.timeSource = 'clock';
-    el('spDate').value = new Date(P.dateMs).toISOString().slice(0, 16);
+    el('spDate').value = skyLocalIso(P.dateMs);
+    if (el('spUtcOut')) {
+      el('spUtcOut').value = new Date(P.dateMs).toISOString().slice(0, 16).replace('T', ' ');
+    }
     skyPrintRefresh();
   });
 
